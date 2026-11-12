@@ -1,0 +1,49 @@
+name: Block dev merge to stage or main
+
+# Flow: feature branch → dev (test) → the same feature branch → stage → main.
+# dev is never merged into stage or main: a PR from dev is closed as soon as it is opened,
+# and this check fails so it cannot be merged even if someone reopens it.
+# "Block dev merge" is a required status check on main.
+
+on:
+  pull_request:
+    branches:
+      - stage
+      - main
+    types:
+      - opened
+      - reopened
+      - edited
+      - synchronize
+      - ready_for_review
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  block-dev-merge:
+    name: Block dev merge
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Reject pull requests from dev
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_BRANCH: ${{ github.head_ref }}
+          TARGET_BRANCH: ${{ github.base_ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          echo "Source branch: $SOURCE_BRANCH"
+          echo "Target branch: $TARGET_BRANCH"
+
+          if [[ "$SOURCE_BRANCH" == "dev" ]]; then
+            gh pr close "$PR_NUMBER" --repo "$REPO" --comment "❌ dev cannot be merged into $TARGET_BRANCH, so this PR was closed automatically.
+          Flow: feature branch → dev (test) → the same feature branch → stage → main. Please open the PR from your feature branch." || true
+            echo "❌ Merge from dev to $TARGET_BRANCH is not allowed."
+            exit 1
+          fi
+
+          echo "✅ Branch merge is allowed."

@@ -1,0 +1,23 @@
+name: Build Base Image
+
+on:
+  workflow_dispatch:
+
+jobs:
+  docker-build-base:
+    name: Build Base Image
+    runs-on: janapost-runner
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+      - name: Base image - Build, tag, and push image to Harbor
+        run: |
+          docker login $ECR_REGISTRY -u github -p $REGISTRY_PASS
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$BASE_IMAGE_TAG . -f $BASE_IMAGE_DOCKERFILE
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$BASE_IMAGE_TAG
+        env:
+          ECR_REGISTRY: harbor.janapost.kz/janapost
+          ECR_REPOSITORY: ${{ github.event.repository.name }}
+          REGISTRY_PASS: ${{ secrets.REGPASS }}
+          BASE_IMAGE_TAG: "base0.0.1"
+          BASE_IMAGE_DOCKERFILE: Dockerfile-base

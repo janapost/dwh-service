@@ -1,0 +1,9 @@
+FROM maven:3.8.4-openjdk-17
+
+RUN mkdir -p /root/.m2/repository
+
+COPY settings.xml /root/.m2
+COPY pom.xml pom.xml
+
+RUN mvn -f pom.xml dependency:resolve
+RUN rm -rf /root/.m2/repository/kz

@@ -1,0 +1,21 @@
+FROM harbor.janapost.kz/janapost/dwh-service:base0.0.1 AS builder
+
+COPY checkstyle.xml /checkstyle.xml
+COPY src /src
+COPY pom.xml /pom.xml
+COPY lombok.config /lombok.config
+
+RUN mvn -f /pom.xml clean package
+
+FROM harbor.janapost.kz/library/openjdk:17
+ENV TZ="Asia/Aqtau"
+COPY --from=builder /target/*.jar /app.jar
+COPY share /etc/share
+RUN chmod 755 /app.jar && \
+    chown -R nobody:nobody /etc/share && \
+    mkdir -p /opt/share && \
+    chown -R nobody:nobody /opt/share
+USER nobody
+CMD ["--server.port=8080"]
+EXPOSE 8080
+ENTRYPOINT ["java","-jar","/app.jar","--spring.config.location=/etc/share/application-yandex.properties"]
