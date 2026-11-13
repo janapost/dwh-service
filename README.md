@@ -15,12 +15,28 @@
 ./mvnw verify          # + checkstyle
 ```
 
+## Что делает
+
+- **Логи и статистика** (UPM-2238): сервисы шлют в Kafka (`event_dwh_log`, `event_dwh_stat`), ClickHouse читает топики сам (Kafka engine + MV). SQL и порядок — `share/clickhouse/README.md`.
+- **Эндпоинты для мобильного приложения:**
+  - `POST /client/v1/log/add-batch`, `POST /client/v1/stat/add-batch` — после входа;
+  - `POST /public/v1/log/add-batch` — до входа.
+
+  Проверяют данные, маскируют ПДн и публикуют в те же топики. API — `context-files/dwh-service/mobile-log-api.md`.
+
 ## Переменные окружения
 
 | Переменная | Назначение |
 |---|---|
 | `SWAGGER_ENABLED` | включить `/v3/api-docs` |
 | `SCHEDULING_POOL_SIZE` | размер пула `@Scheduled` (по умолчанию 3) |
+| `KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_USERNAME`, `KAFKA_PASSWORD` | Kafka (SASL SCRAM-SHA-512) |
+| `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD` | Redis для лимитов частоты (при недоступности запросы пропускаются) |
+| `DWH_MOBILE_ENABLED` / `DWH_MOBILE_PUBLIC_ENABLED` | включить эндпоинты после / до входа (по умолчанию `false`) |
+| `DWH_MOBILE_*`, `DWH_MOBILE_RL_*` | лимиты пачки, тела и частоты — см. `share/application-yandex.properties` |
+| `CLICKHOUSE_*` | заглушка: сервис в ClickHouse пока не ходит |
+
+Mongo приходит транзитивно (`log-manager` → `kz.janapost:util`), но его автоконфигурация выключена (`spring.autoconfigure.exclude`), пока Mongo никто не использует.
 
 ## CI/CD
 
