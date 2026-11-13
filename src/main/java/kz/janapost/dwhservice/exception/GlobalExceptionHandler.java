@@ -43,12 +43,34 @@ public class GlobalExceptionHandler {
         if (e instanceof MethodArgumentNotValidException methodArgumentNotValidException) {
             return new GenericResult<>(-1, "Validation error!", validationErrorData(methodArgumentNotValidException));
         }
+        if (e instanceof BadRequestException) {
+            return new GenericResult<>(-1, e.getMessage(), null);
+        }
+        if (e instanceof TooManyRequestsException tooManyRequestsException) {
+            return new GenericResult<>(-429, "Too many requests, retry later",
+                    Map.of("retryAfterSec", tooManyRequestsException.getRetryAfterSec()));
+        }
+        if (hasCause(e, PayloadTooLargeException.class)) {
+            return new GenericResult<>(-413, "Request body is too large, split the batch", null);
+        }
         if (e instanceof HttpMessageNotReadableException || e instanceof ClientAbortException) {
             return new GenericResult<>(-101, e.getMessage(), null);
         }
         SimpleLogger.getInstanceDayly("exception-all-exception[delete10]", getClass())
                 .append(request.getRequestURI(), ExceptionUtil.getStackTrace(e));
         return new GenericResult<>(-90, e.getMessage(), null);
+    }
+
+    private static boolean hasCause(Throwable e, Class<? extends Throwable> type) {
+        for (Throwable current = e; current != null; current = current.getCause()) {
+            if (type.isInstance(current)) {
+                return true;
+            }
+            if (current.getCause() == current) {
+                return false;
+            }
+        }
+        return false;
     }
 
     private Map<String, Object> validationErrorData(MethodArgumentNotValidException exception) {
