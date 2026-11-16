@@ -42,7 +42,8 @@ class PiiMaskerTest {
     @Test
     @DisplayName("Bearer, JWT и X-TokenInfo маскируются")
     void tokens() {
-        String jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJKUDEifQ.c2lnbmF0dXJl";
+        // Fake JWT for the masking test: payload {"sub":"JP1"}, signature is the literal "signature".
+        String jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJKUDEifQ.c2lnbmF0dXJl"; // nosemgrep
 
         assertThat(masker.mask("Authorization: Bearer abc.def-123")).isEqualTo("Authorization: Bearer " + PiiMasker.TOKEN_MASK);
         assertThat(masker.mask("token=" + jwt)).isEqualTo("token=" + PiiMasker.TOKEN_MASK);

@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
 
@@ -29,8 +30,9 @@ import java.util.function.LongSupplier;
  * <ul>
  *     <li>соединение есть, Redis завис или упал — команда отваливается по {@code spring.data.redis.timeout}
  *         или сразу ({@code REJECT_COMMANDS}, см. {@code RedisConfig});</li>
- *     <li>после любой ошибки Redis не трогаем {@code rate-limit.redis-cooldown-ms} — запросы сразу пропускаются,
- *         а лог «Redis недоступен» пишется раз за период, а не на каждый запрос;</li>
+ *     <li>после любой ошибки Redis не трогаем {@code rate-limit.redis-cooldown-ms}: {@code /client} (с токеном)
+ *         пропускается, {@code /public} (без токена) ограничивается локально, в памяти пода
+ *         ({@code public-local-max-per-second}); лог «Redis недоступен» пишется раз за период;</li>
  *     <li>пока Redis не подтверждён живым (старт пода, после паузы), в него идёт <b>одна</b> проба, остальные
  *         запросы пропускаются. Иначе при «чёрной дыре» (пакеты теряются) они встали бы в очередь на синхронизированное
  *         создание общего соединения ({@code LettuceConnectionFactory.SharedConnection}) и по очереди ждали
@@ -46,6 +48,7 @@ public class MobileRateLimiter {
     static final String PUBLIC_GLOBAL_KEY = "dwh-mobile-rl:public-global";
 
     private static final String LOG_NAME = "mobile-rate-limit[delete10]";
+    private static final long MILLIS_PER_SECOND = 1000;
 
     /**
      * Атомарно по всем ключам по порядку: INCR, TTL окна при первом запросе; превышен лимит — вернуть
@@ -90,6 +93,9 @@ public class MobileRateLimiter {
     private final AtomicLong redisSkipUntil = new AtomicLong();
     /** Идёт ли единственная проба Redis, пока он не подтверждён живым. */
     private final AtomicBoolean probeInFlight = new AtomicBoolean();
+    /** Локальный лимит /public без Redis: текущая секунда (epoch) и число запросов в ней. */
+    private final AtomicLong localWindowSecond = new AtomicLong();
+    private final AtomicInteger localWindowCount = new AtomicInteger();
 
     @Autowired
     public MobileRateLimiter(MobileIngestProperties properties, StringRedisTemplate redis) {
@@ -112,10 +118,15 @@ public class MobileRateLimiter {
                 .add(USER_KEY_PREFIX + jpid, limit.getPerUserWindowSeconds(), limit.getPerUserMaxRequests(), 0)
                 .add(GLOBAL_KEY, limit.getGlobalWindowSeconds(), limit.getGlobalMaxRequests(),
                         limit.getGlobalRetryAfterSeconds());
-        check(limits);
+        Long retryAfterSec = countSafely(limits);
+        // Redis недоступен — запрос с токеном пропускаем (fail-open).
+        throwIfLimited(retryAfterSec == null ? 0 : retryAfterSec);
     }
 
-    /** Запрос до входа. Бросает {@link TooManyRequestsException}, если превышен лимит IP, устройства или общий. */
+    /**
+     * Запрос до входа. Бросает {@link TooManyRequestsException}, если превышен лимит IP, устройства или общий.
+     * Пока Redis недоступен — локальный лимит {@code public-local-max-per-second} на под вместо Redis.
+     */
     public void checkPublic(String ip, String deviceId) {
         MobileIngestProperties.RateLimit limit = properties.getRateLimit();
         if (!limit.isEnabled()) {
@@ -130,32 +141,52 @@ public class MobileRateLimiter {
         }
         limits.add(PUBLIC_GLOBAL_KEY, limit.getGlobalWindowSeconds(), limit.getPublicGlobalMaxRequests(),
                 limit.getGlobalRetryAfterSeconds());
-        check(limits);
+        Long retryAfterSec = countSafely(limits);
+        if (retryAfterSec == null) {
+            throwIfLimited(allowLocally(limit.getPublicLocalMaxPerSecond()) ? 0 : limit.getGlobalRetryAfterSeconds());
+            return;
+        }
+        throwIfLimited(retryAfterSec);
     }
 
-    private void check(Limits limits) {
-        long retryAfterSec = countSafely(limits);
+    private static void throwIfLimited(long retryAfterSec) {
         if (retryAfterSec > 0) {
             throw new TooManyRequestsException(retryAfterSec);
         }
     }
 
-    /** Возвращает retryAfterSec; {@code 0} — запрос разрешён, в том числе когда Redis недоступен. */
-    private long countSafely(Limits limits) {
+    /**
+     * Локальный лимит (в памяти пода, окно 1 с) для {@code /public}, пока Redis недоступен.
+     * Один счётчик на под, без ключей по IP: иначе перебор IP раздувал бы память.
+     */
+    private boolean allowLocally(int maxPerSecond) {
+        long second = clock.getAsLong() / MILLIS_PER_SECOND;
+        long windowStart = localWindowSecond.get();
+        if (windowStart != second && localWindowSecond.compareAndSet(windowStart, second)) {
+            localWindowCount.set(0);
+        }
+        return localWindowCount.incrementAndGet() <= maxPerSecond;
+    }
+
+    /**
+     * retryAfterSec из Redis ({@code 0} — разрешён) или {@code null}, если Redis не использовался:
+     * недоступен, на паузе после ошибки или его проверяет другой запрос.
+     */
+    private Long countSafely(Limits limits) {
         if (clock.getAsLong() < redisSkipUntil.get()) {
-            return 0;
+            return null;
         }
         boolean probe = !redisHealthy;
         if (probe && !probeInFlight.compareAndSet(false, true)) {
-            return 0; // Redis проверяет другой запрос — этот не ждёт его
+            return null; // Redis проверяет другой запрос — этот не ждёт его
         }
         try {
             Long result = redis.execute(CHECK_AND_COUNT_SCRIPT, limits.keys, limits.args.toArray());
             redisHealthy = true;
-            return result == null ? 0 : result;
+            return result == null ? 0L : result;
         } catch (RuntimeException e) {
             onRedisFailure(e);
-            return 0;
+            return null;
         } finally {
             if (probe) {
                 probeInFlight.set(false);
@@ -170,8 +201,9 @@ public class MobileRateLimiter {
         if (previous <= now) {
             // Только тот, кто открыл паузу: лог раз за период, без данных клиента.
             SimpleLogger.getInstanceDayly(LOG_NAME, getClass())
-                    .append("redis unavailable, requests are allowed without limits for "
-                            + properties.getRateLimit().getRedisCooldownMs() + " ms", ExceptionUtil.getStackTrace(e));
+                    .append("redis unavailable for " + properties.getRateLimit().getRedisCooldownMs()
+                            + " ms: /client without limits, /public limited per pod to "
+                            + properties.getRateLimit().getPublicLocalMaxPerSecond() + " rps", ExceptionUtil.getStackTrace(e));
         }
     }
 

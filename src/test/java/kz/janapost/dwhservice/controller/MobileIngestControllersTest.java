@@ -11,6 +11,7 @@ import kz.janapost.dwhservice.controller.pub.v1.PublicLogControllerV1;
 import kz.janapost.dwhservice.exception.TooManyRequestsException;
 import kz.janapost.dwhservice.model.vo.IngestResultVO;
 import kz.janapost.dwhservice.service.MobileIngestService;
+import kz.janapost.dwhservice.util.ClientIpResolver;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -40,7 +41,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * Логика приёма проверяется в {@code MobileIngestService_13_11_2026Test}, здесь сервис — граница.
  */
 @WebMvcTest(controllers = {ClientLogControllerV1.class, ClientStatControllerV1.class, PublicLogControllerV1.class})
-@Import({ClientAuthInterceptor.class, AdminAuthInterceptor.class, CORSInterceptor.class, MobileIngestProperties.class})
+@Import({ClientAuthInterceptor.class, AdminAuthInterceptor.class, CORSInterceptor.class, MobileIngestProperties.class,
+        ClientIpResolver.class})
 class MobileIngestControllersTest {
 
     private static final String TOKEN_INFO = "{\"jpid\":\"JP4595925\",\"type\":\"client\"}";
@@ -97,7 +99,7 @@ class MobileIngestControllersTest {
     }
 
     @Test
-    @DisplayName("/public/** без токена проходит, IP берётся из X-Real-IP")
+    @DisplayName("/public/** без токена проходит; через доверенный прокси (127.0.0.1) IP берётся из X-Real-IP")
     void public_withoutToken_ipFromHeader() throws Exception {
         when(mobileIngestService.acceptPublicLogs(eq("95.56.12.34"), any())).thenReturn(accepted(1));
 
@@ -108,6 +110,24 @@ class MobileIngestControllersTest {
 
         mockMvc.perform(asyncDispatch(result)).andExpect(jsonPath("$.status").value(0));
         verify(mobileIngestService).acceptPublicLogs(eq("95.56.12.34"), any());
+    }
+
+    @Test
+    @DisplayName("/public/** напрямую, не через прокси: подставленный X-Real-IP игнорируется, лимит — по адресу соединения")
+    void public_spoofedRealIp_fromUntrustedAddress_ignored() throws Exception {
+        when(mobileIngestService.acceptPublicLogs(eq("203.0.113.5"), any())).thenReturn(accepted(1));
+
+        MvcResult result = mockMvc.perform(post("/public/v1/log/add-batch")
+                        .with(request -> {
+                            request.setRemoteAddr("203.0.113.5");
+                            return request;
+                        })
+                        .header("X-Real-IP", "1.1.1.1").contentType(MediaType.APPLICATION_JSON).content(LOG_BODY))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        mockMvc.perform(asyncDispatch(result)).andExpect(jsonPath("$.status").value(0));
+        verify(mobileIngestService).acceptPublicLogs(eq("203.0.113.5"), any());
     }
 
     @Test

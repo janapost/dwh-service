@@ -35,6 +35,10 @@
 | `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD` | Redis для лимитов частоты (при недоступности запросы пропускаются) |
 | `DWH_MOBILE_ENABLED` / `DWH_MOBILE_PUBLIC_ENABLED` | включить эндпоинты после / до входа (по умолчанию `false`) |
 | `DWH_MOBILE_*`, `DWH_MOBILE_RL_*` | лимиты пачки, тела и частоты — см. `share/application-yandex.properties` |
+| `DWH_TRUSTED_PROXIES` | CIDR прокси, от которых принимается `X-Real-IP` (по умолчанию частные сети и localhost); от остальных — адрес соединения |
+| `DWH_MOBILE_RL_PUBLIC_LOCAL_MAX` | лимит `/public` в секунду на под, пока Redis недоступен (по умолчанию 50) |
+
+> `DWH_MOBILE_PUBLIC_ENABLED=true` включать только после проверки, что ingress / gateway **перезаписывает** `X-Real-IP`, а не пропускает значение клиента: код защищает только от запросов в обход прокси.
 | `CLICKHOUSE_*` | заглушка: сервис в ClickHouse пока не ходит |
 
 Значения по окружениям — в репозитории `argocd`: `services/dwh-service/janapost-dev1.yaml` (dev1) и `services/dwh-service/stage/values.yaml` (stage).

@@ -5,7 +5,7 @@ import jakarta.validation.Valid;
 import kz.janapost.commonsdk.bean.GenericResult;
 import kz.janapost.dwhservice.model.fo.pub.v1.PublicLogBatchFO;
 import kz.janapost.dwhservice.service.MobileIngestService;
-import kz.janapost.dwhservice.util.RequestUtil;
+import kz.janapost.dwhservice.util.ClientIpResolver;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -24,9 +24,10 @@ import java.util.concurrent.CompletableFuture;
 public class PublicLogControllerV1 {
 
     private final MobileIngestService mobileIngestService;
+    private final ClientIpResolver clientIpResolver;
 
     @PostMapping("/add-batch")
     public CompletableFuture<GenericResult<?>> addBatch(@RequestBody @Valid PublicLogBatchFO fo, HttpServletRequest request) {
-        return mobileIngestService.acceptPublicLogs(RequestUtil.clientIp(request), fo);
+        return mobileIngestService.acceptPublicLogs(clientIpResolver.clientIp(request), fo);
     }
 }

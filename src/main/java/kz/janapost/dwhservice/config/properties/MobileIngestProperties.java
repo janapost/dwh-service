@@ -4,6 +4,9 @@ import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Эндпоинты приёма логов и статистики мобильного приложения:
  * {@code /client/v1/log|stat/add-batch} (после входа) и {@code /public/v1/log/add-batch} (до входа).
@@ -41,6 +44,13 @@ public class MobileIngestProperties {
      */
     private int maxClientTimestampAgeDays = 30;
     private long maxClientTimestampAheadMs = 86_400_000;
+
+    /**
+     * Адреса прокси (CIDR), от которых принимается {@code X-Real-IP}; от остальных берётся адрес соединения.
+     * По умолчанию — частные сети и localhost: ingress / gateway внутри кластера, снаружи с них не прийти.
+     */
+    private List<String> trustedProxies = new ArrayList<>(List.of(
+            "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "::1/128", "fc00::/7"));
 
     private Kafka kafka = new Kafka();
 
@@ -80,7 +90,12 @@ public class MobileIngestProperties {
         private int globalWindowSeconds = 1;
         /** Через сколько повторять после глобального отказа: окно в 1 с отдавать нельзя — все вернутся разом. */
         private int globalRetryAfterSeconds = 30;
-        /** После ошибки Redis не трогаем его столько миллисекунд: запросы пропускаются без лимитов. */
+        /** После ошибки Redis не трогаем его столько миллисекунд. */
         private long redisCooldownMs = 10_000;
+        /**
+         * Пока Redis недоступен, {@code /public} (без токена) ограничивается этим числом запросов в секунду
+         * на под (в памяти), а не пропускается без ограничений. {@code /client} остаётся fail-open: там есть токен.
+         */
+        private int publicLocalMaxPerSecond = 50;
     }
 }
