@@ -26,9 +26,9 @@ Kafka event_dwh_stat ──▶ kafka_dwh_stat ──mv_dwh_stat─────�
 
 | Переменная | По умолчанию | Описание |
 |---|---|---|
-| `CLICKHOUSE_HOST` | — | Тест: `185.32.84.48` снаружи k8s, `clickhouse-events` внутри |
-| `CLICKHOUSE_NATIVE_PORT` | `9000` | Тест снаружи k8s: `30902` |
-| `CLICKHOUSE_USER` | `default` | |
+| `CLICKHOUSE_HOST` | — | Внутри k8s: `clickhouse-events`. Внешний адрес тестового кластера — у ответственного за стенд, в репозиторий не пишем |
+| `CLICKHOUSE_NATIVE_PORT` | `9000` | |
+| `CLICKHOUSE_USER` | `default` | Для прода — отдельный пользователь с минимальными правами |
 | `CLICKHOUSE_PASSWORD` | — | **Секрет.** Только в окружении, в git не попадает |
 | `CLICKHOUSE_DB` | `default` | |
 | `DWH_CH_KAFKA_BROKERS` | — | Список брокеров, например `kafka-1:9092,kafka-2:9092`; обязателен для `02` и `03` |
@@ -57,8 +57,8 @@ Kafka event_dwh_stat ──▶ kafka_dwh_stat ──mv_dwh_stat─────�
 
 ```bash
 cd share/clickhouse
-export CLICKHOUSE_HOST=185.32.84.48 CLICKHOUSE_NATIVE_PORT=30902 CLICKHOUSE_USER=default
-export CLICKHOUSE_PASSWORD=...            # не сохранять в истории: можно через read -s
+export CLICKHOUSE_HOST=<хост> CLICKHOUSE_NATIVE_PORT=<порт> CLICKHOUSE_USER=<пользователь>
+read -rs CLICKHOUSE_PASSWORD && export CLICKHOUSE_PASSWORD   # пароль не попадёт в историю shell
 export DWH_CH_KAFKA_BROKERS=...
 DRY_RUN=1 ./apply.sh                      # посмотреть SQL после подстановки
 ./apply.sh                                # 01, 02, 03
