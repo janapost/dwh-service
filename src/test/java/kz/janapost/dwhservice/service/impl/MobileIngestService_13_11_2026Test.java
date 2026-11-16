@@ -156,7 +156,7 @@ class MobileIngestService_13_11_2026Test {
         assertThat(message.at("/data/eventId").asText()).matches("[0-9a-f-]{36}");
         assertThat(message.at("/data/timestamp").asLong()).isGreaterThanOrEqualTo(before);
         assertThat(message.at("/data").has("stackTrace")).isFalse();
-        assertThat(message.at("/sender/params").size()).isZero();
+        assertThat(message.at("/sender/params").size()).isZero(); // в т. ч. нет untrusted: запрос с токеном
     }
 
     @Test
@@ -301,7 +301,7 @@ class MobileIngestService_13_11_2026Test {
     }
 
     @Test
-    @DisplayName("лог до входа: без jpid, deviceId в sender.params")
+    @DisplayName("лог до входа: без jpid, deviceId и пометка untrusted=true в sender.params")
     void publicLogs_noJpidAndDeviceId() throws Exception {
         kafkaAccepts();
         PublicLogBatchFO fo = new PublicLogBatchFO();
@@ -314,6 +314,8 @@ class MobileIngestService_13_11_2026Test {
         JsonNode message = singleSentMessage(properties.getLogTopic());
         assertThat(message.at("/sender/jpid").isNull()).isTrue();
         assertThat(message.at("/sender/params/deviceId").asText()).isEqualTo("install-42");
+        assertThat(message.at("/sender/params/untrusted").isBoolean()).isTrue();
+        assertThat(message.at("/sender/params/untrusted").asBoolean()).isTrue();
     }
 
     @Test

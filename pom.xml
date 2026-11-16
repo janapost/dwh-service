@@ -17,6 +17,7 @@
         <java.version>17</java.version>
         <lombok.version>1.18.30</lombok.version>
         <springdoc.version>2.1.0</springdoc.version>
+        <feign-sdk.version>1.0.0-RELEASE</feign-sdk.version>
         <maven-checkstyle-plugin.version>3.3.0</maven-checkstyle-plugin.version>
     </properties>
 
@@ -102,6 +103,13 @@
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Декодеры межсервисных вызовов: проверяем, что наши HTTP-коды и тела они разбирают как задумано -->
+        <dependency>
+            <groupId>kz.janapost</groupId>
+            <artifactId>feign-sdk</artifactId>
+            <version>${feign-sdk.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

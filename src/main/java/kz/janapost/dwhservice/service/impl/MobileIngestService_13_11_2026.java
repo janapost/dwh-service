@@ -4,6 +4,7 @@ import kz.janapost.commonsdk.bean.GenericResult;
 import kz.janapost.dwhservice.config.properties.MobileIngestProperties;
 import kz.janapost.dwhservice.event.sender.DwhKafkaPublisher;
 import kz.janapost.dwhservice.exception.BadRequestException;
+import kz.janapost.dwhservice.exception.ResultHttpStatus;
 import kz.janapost.dwhservice.model.fo.client.v1.ClientLogBatchFO;
 import kz.janapost.dwhservice.model.fo.client.v1.ClientLogItemFO;
 import kz.janapost.dwhservice.model.fo.client.v1.ClientStatBatchFO;
@@ -35,8 +36,10 @@ public class MobileIngestService_13_11_2026 implements MobileIngestService {
     static final String LOG_EVENT_NAME = "log";
     static final String STAT_EVENT_NAME = "stat";
     static final int SCHEMA_VERSION = 1;
-    static final int KAFKA_UNAVAILABLE_STATUS = -3;
+    static final int KAFKA_UNAVAILABLE_STATUS = ResultHttpStatus.TEMPORARILY_UNAVAILABLE;
     static final String CLIENT_TIMESTAMP_KEY = "clientTimestamp";
+    /** {@code sender.params.untrusted = true} — запись пришла без токена ({@code /public}). */
+    static final String UNTRUSTED_KEY = "untrusted";
 
     private static final String LOG_NAME = "exception-mobile-kafka-publish[delete10]";
 
@@ -85,6 +88,9 @@ public class MobileIngestService_13_11_2026 implements MobileIngestService {
                 .map(item -> {
                     DwhKafkaMessage.Sender sender = sender(fo, null, now);
                     putIfPresent(sender.getParams(), "deviceId", fo.getDeviceId());
+                    // Без токена: всё содержимое (deviceId, appVersion, текст) — со слов клиента.
+                    // В ClickHouse это колонка untrusted = 1, аналитика должна это учитывать.
+                    sender.getParams().put(UNTRUSTED_KEY, true);
                     return logMessage(item, sender);
                 })
                 .toList();

@@ -24,6 +24,14 @@
 
   Проверяют данные, маскируют ПДн и публикуют в те же топики. API — `context-files/dwh-service/mobile-log-api.md`.
 
+## HTTP-коды ответов
+
+Тело всегда `GenericResult`, а HTTP-код соответствует статусу (`exception/ResultHttpStatus`, ставит `GenericResultHttpStatusAdvice`):
+`0` → 200, `-1` / `-2` / `-101` → 400, `-NNN` (`-401`, `-413`, `-415`, `-429` …) → NNN, `-3` → 503, `-90` и прочее → 500.
+Для 429 добавляется заголовок `Retry-After`. Совместимость с декодерами `kz.janapost:feign-sdk`
+(`GenericResultFeignConfig`: 429 / 5xx повторяются, остальные 4xx → `FeignCallException` со статусом из тела)
+проверяет `FeignSdkCompatibilityTest`.
+
 ## Переменные окружения
 
 | Переменная | Назначение |
@@ -35,7 +43,7 @@
 | `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD` | Redis для лимитов частоты (при недоступности запросы пропускаются) |
 | `DWH_MOBILE_ENABLED` / `DWH_MOBILE_PUBLIC_ENABLED` | включить эндпоинты после / до входа (по умолчанию `false`) |
 | `DWH_MOBILE_*`, `DWH_MOBILE_RL_*` | лимиты пачки, тела и частоты — см. `share/application-yandex.properties` |
-| `DWH_TRUSTED_PROXIES` | CIDR прокси, от которых принимается `X-Real-IP` (по умолчанию частные сети и localhost); от остальных — адрес соединения |
+| `DWH_TRUSTED_PROXIES` | точный CIDR подов ingress / gateway, от которых принимается `X-Real-IP`. По умолчанию пусто: заголовку не доверяем, лимит — по адресу соединения |
 | `DWH_MOBILE_RL_PUBLIC_LOCAL_MAX` / `DWH_MOBILE_RL_CLIENT_LOCAL_MAX` | лимит `/public` / `/client` в секунду на под, пока Redis недоступен (по умолчанию 50 / 200) |
 
 ## Безопасность и ограничения
@@ -50,11 +58,13 @@
   Маскирование эвристическое, приложение не должно логировать ПДн.
 - **Kafka.** Трафик идёт только внутри сети: dev1 — Kafka в кластере (`PLAINTEXT`), stage / prod — Yandex Managed Kafka по внутренним адресам (`SASL_PLAINTEXT`, SCRAM-SHA-512, как у остальных сервисов). Пароль SCRAM по сети не передаётся, но сами сообщения (логи, `jpid`, `device_id`) не шифруются. Переход на `SASL_SSL`: `KAFKA_SECURITY_PROTOCOL=SASL_SSL`, TLS-порт брокера и CA-сертификат Yandex в truststore образа. Это решение по инфраструктуре для всех сервисов.
 - **Redis недоступен.** Запросы не блокируются, а ограничиваются локально, в памяти пода (переменные выше).
+- **Логи до входа (`/public`) — недоверенные данные.** Без токена клиент сам задаёт `deviceId`, `appVersion`, платформу и текст. Такие строки в `logs` помечены `untrusted = 1` (`sender.params.untrusted = true`), в аналитике их нужно отделять: `WHERE untrusted = 0`. От злоупотреблений защищают флаг, лимиты частоты, размер пачки и тела. Подпись или app attestation для `/public` пока нет.
 
 ### Перед включением `/public` (`DWH_MOBILE_PUBLIC_ENABLED=true`)
 
-Код принимает `X-Real-IP` только от доверенных прокси (`DWH_TRUSTED_PROXIES`). Если сам ingress / gateway пропускает значение клиента, лимит «на IP» обходится. Перед включением на окружении:
+Код принимает `X-Real-IP` только от доверенных прокси (`DWH_TRUSTED_PROXIES`, по умолчанию пусто). Если сам ingress / gateway пропускает значение клиента, лимит «на IP» обходится. Перед включением на окружении:
 
+0. Узнать CIDR подов ingress / gateway, через которые приходят запросы к dwh-service, и задать `DWH_TRUSTED_PROXIES` только им. Не все частные сети: иначе любой под кластера сможет подставить чужой IP.
 1. В конфигурации ingress / gateway для маршрута `/dwh-service` найти перезапись заголовка: для nginx — `proxy_set_header X-Real-IP $remote_addr;` (или аналог). Он должен **перезаписывать** заголовок, а не пропускать клиентский.
 2. Проверить запросом извне:
 

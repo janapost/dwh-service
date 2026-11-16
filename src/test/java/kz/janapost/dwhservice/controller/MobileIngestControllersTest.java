@@ -8,6 +8,7 @@ import kz.janapost.dwhservice.config.properties.MobileIngestProperties;
 import kz.janapost.dwhservice.controller.client.v1.ClientLogControllerV1;
 import kz.janapost.dwhservice.controller.client.v1.ClientStatControllerV1;
 import kz.janapost.dwhservice.controller.pub.v1.PublicLogControllerV1;
+import kz.janapost.dwhservice.exception.ResultHttpStatus;
 import kz.janapost.dwhservice.exception.TooManyRequestsException;
 import kz.janapost.dwhservice.model.vo.IngestResultVO;
 import kz.janapost.dwhservice.service.MobileIngestService;
@@ -19,6 +20,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
@@ -32,6 +34,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -43,6 +46,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @WebMvcTest(controllers = {ClientLogControllerV1.class, ClientStatControllerV1.class, PublicLogControllerV1.class})
 @Import({ClientAuthInterceptor.class, AdminAuthInterceptor.class, CORSInterceptor.class, MobileIngestProperties.class,
         ClientIpResolver.class})
+@TestPropertySource(properties = "kz.janapost.dwh-service.mobile.trusted-proxies=127.0.0.0/8")
 class MobileIngestControllersTest {
 
     private static final String TOKEN_INFO = "{\"jpid\":\"JP4595925\",\"type\":\"client\"}";
@@ -131,23 +135,24 @@ class MobileIngestControllersTest {
     }
 
     @Test
-    @DisplayName("невалидное тело — -1 Validation error, сервис не вызывается")
+    @DisplayName("невалидное тело — HTTP 400, -1 Validation error, сервис не вызывается")
     void invalidBody_validationError() throws Exception {
         mockMvc.perform(post("/public/v1/log/add-batch").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"items\":[{\"level\":\"DEBUG\"}]}"))
-                .andExpect(status().isOk())
+                .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.status").value(-1));
 
         verifyNoInteractions(mobileIngestService);
     }
 
     @Test
-    @DisplayName("тело больше лимита (Content-Length) — -413 до разбора JSON")
+    @DisplayName("тело больше лимита (Content-Length) — HTTP 413, -413 до разбора JSON")
     void bodyTooLarge_rejectedByFilter() throws Exception {
         String hugeMessage = "x".repeat(70_000);
         String body = "{\"items\":[{\"level\":\"INFO\",\"message\":\"" + hugeMessage + "\"}]}";
 
         mockMvc.perform(post("/public/v1/log/add-batch").contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isPayloadTooLarge())
                 .andExpect(jsonPath("$.status").value(-413));
 
         verifyNoInteractions(mobileIngestService);
@@ -169,13 +174,41 @@ class MobileIngestControllersTest {
     }
 
     @Test
-    @DisplayName("превышен лимит частоты — -429 с retryAfterSec")
+    @DisplayName("превышен лимит частоты — HTTP 429 с Retry-After, -429 с retryAfterSec")
     void rateLimited_429() throws Exception {
         when(mobileIngestService.acceptPublicLogs(any(), any())).thenThrow(new TooManyRequestsException(30));
 
         mockMvc.perform(post("/public/v1/log/add-batch").contentType(MediaType.APPLICATION_JSON).content(LOG_BODY))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(header().string("Retry-After", "30"))
                 .andExpect(jsonPath("$.status").value(-429))
                 .andExpect(jsonPath("$.data.retryAfterSec").value(30));
+    }
+
+    @Test
+    @DisplayName("Kafka недоступна (-3) — HTTP 503 в асинхронном ответе")
+    void kafkaUnavailable_503() throws Exception {
+        when(mobileIngestService.acceptClientLogs(eq("JP4595925"), any())).thenReturn(CompletableFuture.completedFuture(
+                new GenericResult<>(ResultHttpStatus.TEMPORARILY_UNAVAILABLE, "Temporarily unavailable, retry later", null)));
+
+        MvcResult result = mockMvc.perform(post("/client/v1/log/add-batch")
+                        .header("X-TokenInfo", TOKEN_INFO).contentType(MediaType.APPLICATION_JSON).content(LOG_BODY))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        mockMvc.perform(asyncDispatch(result))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.status").value(-3));
+    }
+
+    @Test
+    @DisplayName("не JSON — HTTP 415 с телом GenericResult, а не 500")
+    void unsupportedMediaType_415() throws Exception {
+        mockMvc.perform(post("/public/v1/log/add-batch").contentType(MediaType.TEXT_PLAIN).content("crash"))
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("$.status").value(-415));
+
+        verifyNoInteractions(mobileIngestService);
     }
 
     private static CompletableFuture<GenericResult<?>> accepted(int count) {

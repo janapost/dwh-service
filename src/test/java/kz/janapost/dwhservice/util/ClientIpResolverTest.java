@@ -14,38 +14,48 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ClientIpResolverTest {
 
-    private final ClientIpResolver defaults = new ClientIpResolver(new MobileIngestProperties());
+    /** Как задают на окружении: CIDR подов ingress / gateway и localhost. */
+    private final ClientIpResolver proxies = resolver(List.of("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "::1/128"));
+
+    @Test
+    @DisplayName("по умолчанию trusted-proxies пуст: X-Real-IP не принимается ни от кого, даже от localhost")
+    void defaultTrustsNobody() {
+        ClientIpResolver defaults = new ClientIpResolver(new MobileIngestProperties());
+
+        assertThat(defaults.clientIp(request("127.0.0.1", "1.2.3.4"))).isEqualTo("127.0.0.1");
+        assertThat(defaults.clientIp(request("10.0.0.7", "1.2.3.4"))).isEqualTo("10.0.0.7");
+    }
 
     @Test
     @DisplayName("запрос не через доверенный прокси: X-Real-IP игнорируется, берётся адрес соединения")
     void untrustedRemote_headerIgnored() {
-        assertThat(defaults.clientIp(request("203.0.113.5", "1.2.3.4"))).isEqualTo("203.0.113.5");
+        assertThat(proxies.clientIp(request("203.0.113.5", "1.2.3.4"))).isEqualTo("203.0.113.5");
     }
 
     @ParameterizedTest
     @ValueSource(strings = {"10.1.2.3", "172.20.0.5", "192.168.1.10", "127.0.0.1", "::1"})
-    @DisplayName("запрос через прокси из частной сети: X-Real-IP используется")
+    @DisplayName("запрос через доверенный прокси: X-Real-IP используется")
     void trustedRemote_headerUsed(String proxy) {
-        assertThat(defaults.clientIp(request(proxy, "95.56.12.34"))).isEqualTo("95.56.12.34");
+        assertThat(proxies.clientIp(request(proxy, "95.56.12.34"))).isEqualTo("95.56.12.34");
     }
 
     @Test
     @DisplayName("доверенный прокси без X-Real-IP — адрес соединения")
     void trustedRemote_noHeader() {
-        assertThat(defaults.clientIp(request("10.0.0.7", null))).isEqualTo("10.0.0.7");
+        assertThat(proxies.clientIp(request("10.0.0.7", null))).isEqualTo("10.0.0.7");
     }
 
     @ParameterizedTest
     @ValueSource(strings = {"evil.example.com", "1.2.3", "999.1.1.1", "1.2.3.4, 5.6.7.8", "", "localhost"})
     @DisplayName("в X-Real-IP не IP-литерал (имя хоста, мусор, список) — адрес соединения, без обращения к DNS")
     void invalidHeader_remoteUsed(String header) {
-        assertThat(defaults.clientIp(request("10.0.0.7", header))).isEqualTo("10.0.0.7");
+        assertThat(proxies.clientIp(request("10.0.0.7", header))).isEqualTo("10.0.0.7");
     }
 
     @Test
     @DisplayName("IPv6 в заголовке от доверенного прокси принимается")
     void ipv6Header() {
-        assertThat(defaults.clientIp(request("10.0.0.7", "2001:db8::1"))).isEqualTo("2001:db8::1");
+        assertThat(proxies.clientIp(request("10.0.0.7", "2001:db8::1"))).isEqualTo("2001:db8::1");
     }
 
     @Test

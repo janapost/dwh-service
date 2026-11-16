@@ -22,7 +22,7 @@ import java.io.IOException;
 
 /**
  * Ограничивает размер тела эндпоинтов мобильного приложения до разбора JSON.
- * Есть {@code Content-Length} — сразу {@code -413}. Нет (chunked) — чтение тела обрывается на лимите,
+ * Есть {@code Content-Length} — сразу {@code -413} с HTTP 413. Нет (chunked) — чтение тела обрывается на лимите,
  * {@link PayloadTooLargeException} превращается в {@code -413} в {@code GlobalExceptionHandler}.
  */
 @Component
@@ -46,6 +46,7 @@ public class MobileBodySizeFilter extends OncePerRequestFilter {
         long limit = limitFor(path(request));
         long contentLength = request.getContentLengthLong();
         if (contentLength > limit) {
+            response.setStatus(HttpServletResponse.SC_REQUEST_ENTITY_TOO_LARGE);
             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
             objectMapper.writeValue(response.getOutputStream(), new GenericResult<>(-413,
                     "Request body is larger than " + limit + " bytes, split the batch", null));

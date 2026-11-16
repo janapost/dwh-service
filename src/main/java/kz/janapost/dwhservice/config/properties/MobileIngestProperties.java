@@ -47,10 +47,10 @@ public class MobileIngestProperties {
 
     /**
      * Адреса прокси (CIDR), от которых принимается {@code X-Real-IP}; от остальных берётся адрес соединения.
-     * По умолчанию — частные сети и localhost: ingress / gateway внутри кластера, снаружи с них не прийти.
+     * По умолчанию пусто — заголовку не доверяем никогда: широкий список (все частные сети) позволил бы любому поду
+     * кластера подставить чужой IP. Перед включением {@code /public} указать точный CIDR подов ingress / gateway.
      */
-    private List<String> trustedProxies = new ArrayList<>(List.of(
-            "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "::1/128", "fc00::/7"));
+    private List<String> trustedProxies = new ArrayList<>();
 
     private Kafka kafka = new Kafka();
 

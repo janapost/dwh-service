@@ -2,6 +2,7 @@ package kz.janapost.dwhservice.util;
 
 import jakarta.servlet.http.HttpServletRequest;
 import kz.janapost.dwhservice.config.properties.MobileIngestProperties;
+import kz.janapost.simplelogger.SimpleLogger;
 import org.springframework.stereotype.Component;
 
 import java.net.InetAddress;
@@ -15,6 +16,7 @@ import java.util.regex.Pattern;
  * Заголовку {@code X-Real-IP} доверяем, <b>только если запрос пришёл с адреса доверенного прокси</b>
  * ({@code mobile.trusted-proxies}, CIDR): тогда заголовок поставил ingress / gateway. Иначе берём адрес соединения:
  * клиент, который обратился к сервису в обход прокси, не может подставить чужой IP и обойти лимит «на IP».
+ * По умолчанию список пуст — заголовку не доверяем, пока не указан точный CIDR подов ingress / gateway.
  * <p>
  * Чего код сделать не может: если доверенный прокси <b>пропускает</b> {@code X-Real-IP} от клиента, а не
  * перезаписывает его, подмена остаётся возможной. Это проверяется на окружении до включения
@@ -25,6 +27,7 @@ import java.util.regex.Pattern;
 @Component
 public class ClientIpResolver {
     public static final String REAL_IP_HEADER = "X-Real-IP";
+    private static final String LOG_NAME = "mobile-client-ip[delete10]";
 
     private static final Pattern IPV4 = Pattern.compile(
             "^(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)(\\.(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)){3}$");
@@ -42,6 +45,13 @@ public class ClientIpResolver {
                 .filter(cidr -> !cidr.isEmpty())
                 .map(Cidr::parse)
                 .toList();
+        if (properties.isPublicEnabled() && trustedProxies.isEmpty()) {
+            // Безопасно (заголовку не доверяем), но в k8s все запросы приходят с адреса ingress:
+            // лимит «на IP» для /public станет общим для всех клиентов.
+            SimpleLogger.getInstanceDayly(LOG_NAME, getClass()).append(
+                    "mobile.public-enabled=true, but mobile.trusted-proxies is empty: X-Real-IP is ignored, "
+                            + "/public per-IP limit is counted by the proxy address. Set DWH_TRUSTED_PROXIES to the ingress CIDR.");
+        }
     }
 
     public String clientIp(HttpServletRequest request) {

@@ -13,7 +13,7 @@ import java.util.concurrent.CompletableFuture;
  * <ul>
  *     <li>{@code ok(accepted = N)} — Kafka приняла все записи;</li>
  *     <li>{@code ok(accepted = 0)} — приём выключен флагом;</li>
- *     <li>{@code -3} — Kafka недоступна, повторить позже с теми же {@code eventId}.</li>
+ *     <li>{@code -3} — Kafka недоступна (HTTP 503), повторить позже с теми же {@code eventId}.</li>
  * </ul>
  */
 public interface MobileIngestService {

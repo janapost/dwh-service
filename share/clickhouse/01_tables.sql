@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS logs
     os_version     String,
     jpid           String,
     device_id      String,
+    untrusted      UInt8,
     received_at    DateTime64(3, 'UTC') DEFAULT now64(3),
     INDEX idx_trace_id trace_id TYPE bloom_filter GRANULARITY 4,
     INDEX idx_jpid jpid TYPE bloom_filter GRANULARITY 4
@@ -30,6 +31,10 @@ TTL toDateTime(ts) + INTERVAL ${DWH_CH_LOG_TTL_DAYS} DAY;
 -- device_id (sender.params.deviceId: app install id, sent with logs before login) was added after the first
 -- version of the table. For a table created earlier: metadata-only change, existing rows read as ''.
 ALTER TABLE logs ADD COLUMN IF NOT EXISTS device_id String AFTER jpid;
+
+-- untrusted = 1: the record came without a token (/public, logs before login); everything in it is client-supplied.
+-- Analytics must treat such rows as untrusted. Added after the first version: metadata-only, existing rows read as 0.
+ALTER TABLE logs ADD COLUMN IF NOT EXISTS untrusted UInt8 AFTER device_id;
 
 CREATE TABLE IF NOT EXISTS stats
 (
