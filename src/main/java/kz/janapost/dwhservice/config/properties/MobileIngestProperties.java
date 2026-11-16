@@ -93,9 +93,10 @@ public class MobileIngestProperties {
         /** После ошибки Redis не трогаем его столько миллисекунд. */
         private long redisCooldownMs = 10_000;
         /**
-         * Пока Redis недоступен, {@code /public} (без токена) ограничивается этим числом запросов в секунду
-         * на под (в памяти), а не пропускается без ограничений. {@code /client} остаётся fail-open: там есть токен.
+         * Пока Redis недоступен, запросы ограничиваются этим числом в секунду на под (в памяти), а не пропускаются
+         * без ограничений. Счётчики {@code /public} и {@code /client} отдельные.
          */
         private int publicLocalMaxPerSecond = 50;
+        private int clientLocalMaxPerSecond = 200;
     }
 }

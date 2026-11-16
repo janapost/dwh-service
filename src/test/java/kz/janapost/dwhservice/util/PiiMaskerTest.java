@@ -51,6 +51,52 @@ class PiiMaskerTest {
                 .isEqualTo("X-TokenInfo: " + PiiMasker.TOKEN_MASK);
     }
 
+    // Примеры ИИН посчитаны отдельно от кода (awk по алгоритму контрольной цифры ИИН/БИН РК).
+    @ParameterizedTest
+    @ValueSource(strings = {"900101300007", "900101300811"})
+    @DisplayName("ИИН с верной контрольной цифрой маскируется (в т. ч. со вторым проходом весов)")
+    void iin(String iin) {
+        assertThat(masker.mask("ИИН " + iin + ", заказ")).isEqualTo("ИИН " + PiiMasker.IIN_MASK + ", заказ");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"900101300008", "900101300800", "123456789012"})
+    @DisplayName("12 цифр с неверной контрольной цифрой или невыдаваемый номер — не ИИН, не маскируются")
+    void nonIin12Digits(String number) {
+        assertThat(masker.mask("order " + number)).isEqualTo("order " + number);
+    }
+
+    @Test
+    @DisplayName("ИИН внутри более длинного числа не ищется")
+    void iinInsideLongerNumberIgnored() {
+        assertThat(masker.mask("id 1900101300007")).doesNotContain(PiiMasker.IIN_MASK);
+    }
+
+    @Test
+    @DisplayName("телефон UZ из 12 цифр остаётся телефоном, а не ИИН")
+    void cisPhoneIsPhoneNotIin() {
+        assertThat(masker.mask("tel 998901234567")).isEqualTo("tel " + PiiMasker.PHONE_MASK);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"user@mail.kz", "first.last+tag@janapost.kz", "a_b-c@sub.domain.com"})
+    @DisplayName("email маскируется")
+    void email(String email) {
+        assertThat(masker.mask("contact " + email + " now")).isEqualTo("contact " + PiiMasker.EMAIL_MASK + " now");
+    }
+
+    @Test
+    @DisplayName("ИИН и email в attributes тоже маскируются")
+    void iinAndEmailInAttributes() {
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put("iin", "900101300007");
+        values.put("email", "user@mail.kz");
+
+        assertThat(masker.maskValues(values))
+                .containsEntry("iin", PiiMasker.IIN_MASK)
+                .containsEntry("email", PiiMasker.EMAIL_MASK);
+    }
+
     @Test
     @DisplayName("обычный текст, короткие числа и номера заказов не меняются")
     void plainTextIsKept() {

@@ -36,9 +36,34 @@
 | `DWH_MOBILE_ENABLED` / `DWH_MOBILE_PUBLIC_ENABLED` | включить эндпоинты после / до входа (по умолчанию `false`) |
 | `DWH_MOBILE_*`, `DWH_MOBILE_RL_*` | лимиты пачки, тела и частоты — см. `share/application-yandex.properties` |
 | `DWH_TRUSTED_PROXIES` | CIDR прокси, от которых принимается `X-Real-IP` (по умолчанию частные сети и localhost); от остальных — адрес соединения |
-| `DWH_MOBILE_RL_PUBLIC_LOCAL_MAX` | лимит `/public` в секунду на под, пока Redis недоступен (по умолчанию 50) |
+| `DWH_MOBILE_RL_PUBLIC_LOCAL_MAX` / `DWH_MOBILE_RL_CLIENT_LOCAL_MAX` | лимит `/public` / `/client` в секунду на под, пока Redis недоступен (по умолчанию 50 / 200) |
 
-> `DWH_MOBILE_PUBLIC_ENABLED=true` включать только после проверки, что ingress / gateway **перезаписывает** `X-Real-IP`, а не пропускает значение клиента: код защищает только от запросов в обход прокси.
+## Безопасность и ограничения
+
+- **Персональные данные в логах приложения.** До Kafka маскируются:
+  - токены (`Bearer`, JWT, `X-TokenInfo`);
+  - email;
+  - номера карт (проверка Луна);
+  - телефоны KZ / KG / UZ / TJ;
+  - ИИН / БИН (12 цифр с контрольной цифрой).
+
+  Маскирование эвристическое, приложение не должно логировать ПДн.
+- **Kafka.** Трафик идёт только внутри сети: dev1 — Kafka в кластере (`PLAINTEXT`), stage / prod — Yandex Managed Kafka по внутренним адресам (`SASL_PLAINTEXT`, SCRAM-SHA-512, как у остальных сервисов). Пароль SCRAM по сети не передаётся, но сами сообщения (логи, `jpid`, `device_id`) не шифруются. Переход на `SASL_SSL`: `KAFKA_SECURITY_PROTOCOL=SASL_SSL`, TLS-порт брокера и CA-сертификат Yandex в truststore образа. Это решение по инфраструктуре для всех сервисов.
+- **Redis недоступен.** Запросы не блокируются, а ограничиваются локально, в памяти пода (переменные выше).
+
+### Перед включением `/public` (`DWH_MOBILE_PUBLIC_ENABLED=true`)
+
+Код принимает `X-Real-IP` только от доверенных прокси (`DWH_TRUSTED_PROXIES`). Если сам ingress / gateway пропускает значение клиента, лимит «на IP» обходится. Перед включением на окружении:
+
+1. В конфигурации ingress / gateway для маршрута `/dwh-service` найти перезапись заголовка: для nginx — `proxy_set_header X-Real-IP $remote_addr;` (или аналог). Он должен **перезаписывать** заголовок, а не пропускать клиентский.
+2. Проверить запросом извне:
+
+   ```bash
+   curl -X POST https://<gateway>/dwh-service/public/v1/log/add-batch -H 'Content-Type: application/json' -H 'X-Real-IP: 1.2.3.4' --data '{"items":[{"level":"INFO","message":"x-real-ip-check"}]}'
+   ```
+
+   В Redis должен появиться ключ `dwh-mobile-rl:ip:<ваш внешний IP>`, а **не** `dwh-mobile-rl:ip:1.2.3.4`.
+3. Записать результат (кто, когда, где проверил) в описании задачи и только потом включать флаг в `argocd`.
 | `CLICKHOUSE_*` | заглушка: сервис в ClickHouse пока не ходит |
 
 Значения по окружениям — в репозитории `argocd`: `services/dwh-service/janapost-dev1.yaml` (dev1) и `services/dwh-service/stage/values.yaml` (stage).
