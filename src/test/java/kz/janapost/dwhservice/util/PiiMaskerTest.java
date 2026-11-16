@@ -5,12 +5,19 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 class PiiMaskerTest {
+
+    /** {@code items[].stackTrace} — самое длинное поле, которое проходит через маскирование. */
+    private static final int MAX_FIELD_LENGTH = 16_000;
+    /** С квадратичной регуляркой такая строка маскируется сотни миллисекунд и дольше, линейная — единицы. */
+    private static final long LINEAR_TIME_BUDGET_MS = 150;
 
     private final PiiMasker masker = new PiiMasker();
 
@@ -122,5 +129,26 @@ class PiiMaskerTest {
         assertThat(masker.maskValues(values))
                 .containsEntry("phone", PiiMasker.PHONE_MASK)
                 .containsEntry("screen", "payment");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"a", "eyJ", "a.", "a@", "a@a", "a@a.", "1", "1-", "7 ", "7(", "99 2", "x-tokeninfo:{", "bearer "})
+    @DisplayName("строка максимальной длины (stackTrace, 16000) без совпадения маскируется за линейное время")
+    void longAdversarialInput_linearTime(String chunk) {
+        String input = chunk.repeat(MAX_FIELD_LENGTH / chunk.length());
+
+        assertTimeoutPreemptively(Duration.ofMillis(LINEAR_TIME_BUDGET_MS), () -> masker.mask(input));
+    }
+
+    @Test
+    @DisplayName("email и JWT посреди длинной строки всё ещё маскируются")
+    void emailAndJwt_insideLongInput() {
+        String prefix = "a".repeat(MAX_FIELD_LENGTH / 2);
+        // Fake JWT for the masking test: payload {"sub":"JP1"}, signature is the literal "signature".
+        String jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJKUDEifQ.signature"; // nosemgrep
+
+        assertThat(masker.mask(prefix + " user.name@mail.kz " + jwt))
+                .isEqualTo(prefix + " " + PiiMasker.EMAIL_MASK + " " + PiiMasker.TOKEN_MASK);
+        assertThat(masker.mask("to:" + "u".repeat(64) + "@mail.kz")).isEqualTo("to:" + PiiMasker.EMAIL_MASK);
     }
 }

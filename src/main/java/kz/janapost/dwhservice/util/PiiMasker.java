@@ -24,7 +24,13 @@ public class PiiMasker {
     static final String IIN_MASK = "***IIN***";
     static final String EMAIL_MASK = "***EMAIL***";
 
-    private static final Pattern JWT = Pattern.compile("eyJ[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]+");
+    /*
+     * Регулярки работают на полях до 16000 символов без аутентификации (/public), поэтому каждая должна быть линейной:
+     * поиск начинается только с левой границы токена (lookbehind), повторы ограничены. Без этого строка вида
+     * "aaaa…" или "eyJeyJ…" проверяется с каждой позиции до конца строки — O(n^2), секунды CPU на одно поле.
+     */
+    private static final Pattern JWT =
+            Pattern.compile("(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]+");
     private static final Pattern BEARER = Pattern.compile("(?i)bearer\\s+[A-Za-z0-9\\-._~+/]+=*");
     private static final Pattern TOKEN_INFO = Pattern.compile("(?i)(x-tokeninfo[\"']?\\s*[:=]\\s*)(\"[^\"]*\"|\\{[^}]*}|\\S+)");
     /** 13–19 цифр, допускаются пробелы и дефисы между ними. */
@@ -35,7 +41,9 @@ public class PiiMasker {
     private static final Pattern PHONE_CIS = Pattern.compile("(?<![\\d+])\\+?99[268](?:[\\s\\-()]*\\d){9}(?!\\d)");
     /** ИИН / БИН: ровно 12 цифр подряд; маскируется, только если сходится контрольная цифра. */
     private static final Pattern IIN_CANDIDATE = Pattern.compile("(?<!\\d)\\d{12}(?!\\d)");
-    private static final Pattern EMAIL = Pattern.compile("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}");
+    /** Длины по RFC 5321: local-part до 64, домен до 253, TLD до 63. Local-part длиннее 64 email не считается. */
+    private static final Pattern EMAIL = Pattern.compile(
+            "(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}\\.[A-Za-z]{2,63}");
 
     private static final int CARD_MIN_DIGITS = 13;
     private static final int IIN_CHECKED_DIGITS = 11;
