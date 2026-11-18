@@ -1,0 +1,164 @@
+package kz.janapost.dwhservice.util;
+
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+
+import java.time.Duration;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
+
+class PiiMaskerTest {
+
+    /** {@code items[].stackTrace} — самое длинное поле, которое проходит через маскирование. */
+    private static final int MAX_FIELD_LENGTH = 16_000;
+    /** С квадратичной регуляркой такая строка маскируется сотни миллисекунд и дольше, линейная — единицы. */
+    private static final long LINEAR_TIME_BUDGET_MS = 150;
+
+    private final PiiMasker masker = new PiiMasker();
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "+77011234567", "87011234567", "+7 (701) 123-45-67", "8 701 123 45 67", // KZ
+            "+996555123456", "+996 555 123 456",                                    // KG
+            "+998901234567", "+998 90 123 45 67",                                   // UZ
+            "+992931234567"                                                         // TJ
+    })
+    @DisplayName("телефоны KZ / KG / UZ / TJ маскируются")
+    void phones(String phone) {
+        assertThat(masker.mask("call " + phone + " now")).isEqualTo("call " + PiiMasker.PHONE_MASK + " now");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"4111111111111111", "4111 1111 1111 1111", "5500-0000-0000-0004"})
+    @DisplayName("номера карт, прошедшие проверку Луна, маскируются")
+    void cards(String card) {
+        assertThat(masker.mask("card " + card)).isEqualTo("card " + PiiMasker.CARD_MASK);
+    }
+
+    @Test
+    @DisplayName("16 цифр без проверки Луна не считаются картой")
+    void nonLuhnNumberIsKept() {
+        assertThat(masker.mask("order 4111111111111112")).isEqualTo("order 4111111111111112");
+    }
+
+    @Test
+    @DisplayName("Bearer, JWT и X-TokenInfo маскируются")
+    void tokens() {
+        // Fake JWT for the masking test: payload {"sub":"JP1"}, signature is the literal "signature".
+        String jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJKUDEifQ.c2lnbmF0dXJl"; // nosemgrep
+
+        assertThat(masker.mask("Authorization: Bearer abc.def-123")).isEqualTo("Authorization: Bearer " + PiiMasker.TOKEN_MASK);
+        assertThat(masker.mask("token=" + jwt)).isEqualTo("token=" + PiiMasker.TOKEN_MASK);
+        assertThat(masker.mask("X-TokenInfo: {\"jpid\":\"JP1\",\"phone\":\"x\"}"))
+                .isEqualTo("X-TokenInfo: " + PiiMasker.TOKEN_MASK);
+    }
+
+    @Test
+    @DisplayName("X-TokenInfo с вложенным JSON или экранированной строкой маскируется целиком, до конца строки")
+    void tokenInfo_nestedJson_maskedToEndOfLine() {
+        String nested = "X-TokenInfo: {\"jpid\":\"JP1\",\"device\":{\"id\":\"d1\"},\"secret\":\"s3cr3t\"}";
+        String escaped = "{\"X-TokenInfo\":\"{\\\"jpid\\\":\\\"JP1\\\",\\\"secret\\\":\\\"s3cr3t\\\"}\"}";
+
+        assertThat(masker.mask(nested + "\nnext line")).isEqualTo("X-TokenInfo: " + PiiMasker.TOKEN_MASK + "\nnext line");
+        assertThat(masker.mask(escaped)).doesNotContain("s3cr3t").doesNotContain("JP1");
+    }
+
+    // Примеры ИИН посчитаны отдельно от кода (awk по алгоритму контрольной цифры ИИН/БИН РК).
+    @ParameterizedTest
+    @ValueSource(strings = {"900101300007", "900101300811"})
+    @DisplayName("ИИН с верной контрольной цифрой маскируется (в т. ч. со вторым проходом весов)")
+    void iin(String iin) {
+        assertThat(masker.mask("ИИН " + iin + ", заказ")).isEqualTo("ИИН " + PiiMasker.IIN_MASK + ", заказ");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"900101300008", "900101300800", "123456789012"})
+    @DisplayName("12 цифр с неверной контрольной цифрой или невыдаваемый номер — не ИИН, не маскируются")
+    void nonIin12Digits(String number) {
+        assertThat(masker.mask("order " + number)).isEqualTo("order " + number);
+    }
+
+    @Test
+    @DisplayName("ИИН внутри более длинного числа не ищется")
+    void iinInsideLongerNumberIgnored() {
+        assertThat(masker.mask("id 1900101300007")).doesNotContain(PiiMasker.IIN_MASK);
+    }
+
+    @Test
+    @DisplayName("телефон UZ из 12 цифр остаётся телефоном, а не ИИН")
+    void cisPhoneIsPhoneNotIin() {
+        assertThat(masker.mask("tel 998901234567")).isEqualTo("tel " + PiiMasker.PHONE_MASK);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"user@mail.kz", "first.last+tag@janapost.kz", "a_b-c@sub.domain.com"})
+    @DisplayName("email маскируется")
+    void email(String email) {
+        assertThat(masker.mask("contact " + email + " now")).isEqualTo("contact " + PiiMasker.EMAIL_MASK + " now");
+    }
+
+    @Test
+    @DisplayName("ИИН и email в attributes тоже маскируются")
+    void iinAndEmailInAttributes() {
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put("iin", "900101300007");
+        values.put("email", "user@mail.kz");
+
+        assertThat(masker.maskValues(values))
+                .containsEntry("iin", PiiMasker.IIN_MASK)
+                .containsEntry("email", PiiMasker.EMAIL_MASK);
+    }
+
+    @Test
+    @DisplayName("обычный текст, короткие числа и номера заказов не меняются")
+    void plainTextIsKept() {
+        String text = "Payment screen crashed: order JP4595925, attempt 3, code 500";
+
+        assertThat(masker.mask(text)).isEqualTo(text);
+    }
+
+    @Test
+    @DisplayName("null и пустая строка возвращаются как есть")
+    void nullAndEmpty() {
+        assertThat(masker.mask(null)).isNull();
+        assertThat(masker.mask("")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("в map маскируются значения, ключи не трогаются")
+    void maskValues() {
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put("phone", "+77011234567");
+        values.put("screen", "payment");
+
+        assertThat(masker.maskValues(values))
+                .containsEntry("phone", PiiMasker.PHONE_MASK)
+                .containsEntry("screen", "payment");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"a", "eyJ", "a.", "a@", "a@a", "a@a.", "1", "1-", "7 ", "7(", "99 2", "x-tokeninfo:{", "bearer "})
+    @DisplayName("строка максимальной длины (stackTrace, 16000) без совпадения маскируется за линейное время")
+    void longAdversarialInput_linearTime(String chunk) {
+        String input = chunk.repeat(MAX_FIELD_LENGTH / chunk.length());
+
+        assertTimeoutPreemptively(Duration.ofMillis(LINEAR_TIME_BUDGET_MS), () -> masker.mask(input));
+    }
+
+    @Test
+    @DisplayName("email и JWT посреди длинной строки всё ещё маскируются")
+    void emailAndJwt_insideLongInput() {
+        String prefix = "a".repeat(MAX_FIELD_LENGTH / 2);
+        // Fake JWT for the masking test: payload {"sub":"JP1"}, signature is the literal "signature".
+        String jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJKUDEifQ.signature"; // nosemgrep
+
+        assertThat(masker.mask(prefix + " user.name@mail.kz " + jwt))
+                .isEqualTo(prefix + " " + PiiMasker.EMAIL_MASK + " " + PiiMasker.TOKEN_MASK);
+        assertThat(masker.mask("to:" + "u".repeat(64) + "@mail.kz")).isEqualTo("to:" + PiiMasker.EMAIL_MASK);
+    }
+}
