@@ -1,5 +1,7 @@
 package kz.janapost.dwhservice.service.impl;
 
+import io.micrometer.core.instrument.MeterRegistry;
+import jakarta.annotation.PreDestroy;
 import kz.janapost.commonsdk.bean.GenericResult;
 import kz.janapost.dwhservice.config.properties.MobileIngestProperties;
 import kz.janapost.dwhservice.event.sender.DwhKafkaPublisher;
@@ -16,22 +18,25 @@ import kz.janapost.dwhservice.model.vo.IngestResultVO;
 import kz.janapost.dwhservice.service.MobileIngestService;
 import kz.janapost.dwhservice.service.MobileRateLimiter;
 import kz.janapost.dwhservice.util.PiiMasker;
-import kz.janapost.simplelogger.SimpleLogger;
+import kz.janapost.dwhservice.util.ThrottledLog;
 import kz.janapost.util.ExceptionUtil;
-import lombok.RequiredArgsConstructor;
+import org.springframework.scheduling.concurrent.CustomizableThreadFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 
 @Service
-@RequiredArgsConstructor
 public class MobileIngestService_13_11_2026 implements MobileIngestService {
+    /** Prometheus: {@code dwh_mobile_publish_failed_total{topic}} — для алерта на недоступность Kafka. */
+    static final String PUBLISH_FAILED_METRIC = "dwh.mobile.publish.failed";
     static final String APP_NAME_PREFIX = "mobile";
     static final String LOG_EVENT_NAME = "log";
     static final String STAT_EVENT_NAME = "stat";
@@ -40,13 +45,32 @@ public class MobileIngestService_13_11_2026 implements MobileIngestService {
     static final String CLIENT_TIMESTAMP_KEY = "clientTimestamp";
     /** {@code sender.params.untrusted = true} — запись пришла без токена ({@code /public}). */
     static final String UNTRUSTED_KEY = "untrusted";
+    /** {@code sender.params.clientId} — ID установки приложения, во всех трёх эндпоинтах. */
+    static final String CLIENT_ID_KEY = "clientId";
 
     private static final String LOG_NAME = "exception-mobile-kafka-publish[delete10]";
+    private static final long PUBLISH_FAILURE_LOG_PERIOD_MS = TimeUnit.MINUTES.toMillis(1);
+    /** Работа в колбэке — собрать ответ, изредка строка лога: двух потоков хватает с запасом. */
+    private static final int CALLBACK_THREADS = 2;
 
     private final MobileIngestProperties properties;
     private final MobileRateLimiter rateLimiter;
     private final DwhKafkaPublisher publisher;
     private final PiiMasker piiMasker;
+    private final MeterRegistry meterRegistry;
+    private final ThrottledLog publishFailureLog =
+            new ThrottledLog(LOG_NAME, getClass(), PUBLISH_FAILURE_LOG_PERIOD_MS, System::currentTimeMillis);
+    /** Не Spring-бин: бин типа Executor отключил бы {@code applicationTaskExecutor} (MVC async, {@code @Async}). */
+    private final ExecutorService callbackExecutor = Executors.newFixedThreadPool(CALLBACK_THREADS, callbackThreadFactory());
+
+    public MobileIngestService_13_11_2026(MobileIngestProperties properties, MobileRateLimiter rateLimiter,
+                                          DwhKafkaPublisher publisher, PiiMasker piiMasker, MeterRegistry meterRegistry) {
+        this.properties = properties;
+        this.rateLimiter = rateLimiter;
+        this.publisher = publisher;
+        this.piiMasker = piiMasker;
+        this.meterRegistry = meterRegistry;
+    }
 
     @Override
     public CompletableFuture<GenericResult<?>> acceptClientLogs(String jpid, ClientLogBatchFO fo) {
@@ -82,13 +106,12 @@ public class MobileIngestService_13_11_2026 implements MobileIngestService {
             return disabled();
         }
         checkItemCount(fo.getItems().size(), properties.getPublicMaxItems());
-        rateLimiter.checkPublic(ip, fo.getDeviceId());
+        rateLimiter.checkPublic(ip, fo.getClientId());
         long now = System.currentTimeMillis();
         List<DwhKafkaMessage> messages = fo.getItems().stream()
                 .map(item -> {
                     DwhKafkaMessage.Sender sender = sender(fo, null, now);
-                    putIfPresent(sender.getParams(), "deviceId", fo.getDeviceId());
-                    // Без токена: всё содержимое (deviceId, appVersion, текст) — со слов клиента.
+                    // Без токена: всё содержимое (clientId, appVersion, текст) — со слов клиента.
                     // В ClickHouse это колонка untrusted = 1, аналитика должна это учитывать.
                     sender.getParams().put(UNTRUSTED_KEY, true);
                     return logMessage(item, sender);
@@ -146,7 +169,7 @@ public class MobileIngestService_13_11_2026 implements MobileIngestService {
 
     private static Map<String, Object> baseData(String eventId, long eventTime) {
         Map<String, Object> data = new LinkedHashMap<>();
-        data.put("eventId", eventId != null ? eventId : UUID.randomUUID().toString());
+        data.put("eventId", eventId); // обязателен (@NotBlank): повтор пачки приходит с теми же eventId
         data.put("schemaVersion", SCHEMA_VERSION);
         data.put("timestamp", eventTime);
         return data;
@@ -167,16 +190,15 @@ public class MobileIngestService_13_11_2026 implements MobileIngestService {
         sender.setAppName(appName(info.getPlatform()));
         sender.setJpid(jpid);
         sender.setTimestamp(now);
+        putIfPresent(sender.getParams(), CLIENT_ID_KEY, info.getClientId());
         putIfPresent(sender.getParams(), "appVersion", info.getAppVersion());
         putIfPresent(sender.getParams(), "deviceModel", info.getDeviceModel());
         putIfPresent(sender.getParams(), "osVersion", info.getOsVersion());
         return sender;
     }
 
+    /** {@code mobile-ios} / {@code mobile-android}: platform обязателен и проверен валидацией. */
     static String appName(String platform) {
-        if (platform == null || platform.isBlank()) {
-            return APP_NAME_PREFIX;
-        }
         return APP_NAME_PREFIX + "-" + platform.toLowerCase(Locale.ROOT);
     }
 
@@ -198,16 +220,34 @@ public class MobileIngestService_13_11_2026 implements MobileIngestService {
         }
     }
 
+    /**
+     * Ответ собирается на своём пуле ({@link #callbackExecutor}), а не там, где завершился future: иначе это был бы
+     * {@code kafka-producer-network-thread} (он же отправляет все записи) или общий для JVM поток {@code orTimeout},
+     * и запись лога на них тормозила бы отправку и чужие таймауты.
+     */
     private CompletableFuture<GenericResult<?>> publish(String topic, List<DwhKafkaMessage> messages) {
         return publisher.publish(topic, messages, properties.getKafkaSendTimeoutMs())
-                .handle((ignored, error) -> {
+                .handleAsync((ignored, error) -> {
                     if (error == null) {
                         return GenericResult.ok(new IngestResultVO(messages.size()));
                     }
-                    SimpleLogger.getInstanceDayly(LOG_NAME, getClass())
-                            .append("topic: %s, items: %d".formatted(topic, messages.size()), ExceptionUtil.getStackTrace(error));
+                    meterRegistry.counter(PUBLISH_FAILED_METRIC, "topic", topic).increment();
+                    // Раз за период и без данных клиента: только топик и размер пачки.
+                    publishFailureLog.append("topic: %s, items: %d".formatted(topic, messages.size()),
+                            () -> ExceptionUtil.getStackTrace(error));
                     return new GenericResult<>(KAFKA_UNAVAILABLE_STATUS, "Temporarily unavailable, retry later", null);
-                });
+                }, callbackExecutor);
+    }
+
+    @PreDestroy
+    void shutdownCallbackExecutor() {
+        callbackExecutor.shutdown();
+    }
+
+    private static ThreadFactory callbackThreadFactory() {
+        CustomizableThreadFactory factory = new CustomizableThreadFactory("dwh-publish-callback-");
+        factory.setDaemon(true);
+        return factory;
     }
 
     private static CompletableFuture<GenericResult<?>> disabled() {

@@ -51,10 +51,12 @@ class MobileIngestControllersTest {
 
     private static final String TOKEN_INFO = "{\"jpid\":\"JP4595925\",\"type\":\"client\"}";
     private static final String LOG_BODY = """
-            {"platform":"android","jpid":"JP_FROM_BODY","items":[{"level":"ERROR","message":"crash"}]}
+            {"platform":"android","appVersion":"5.12.0","clientId":"install-42","jpid":"JP_FROM_BODY",
+             "items":[{"eventId":"7c9e6679-7425-40de-944b-e07fc1f90ae7","level":"ERROR","message":"crash"}]}
             """;
     private static final String STAT_BODY = """
-            {"platform":"ios","items":[{"metric":"screen_load_ms","value":812}]}
+            {"platform":"ios","appVersion":"5.12.0","clientId":"install-42",
+             "items":[{"eventId":"7c9e6679-7425-40de-944b-e07fc1f90ae8","metric":"screen_load_ms","value":812}]}
             """;
 
     @Autowired
@@ -141,6 +143,27 @@ class MobileIngestControllersTest {
                         .content("{\"items\":[{\"level\":\"DEBUG\"}]}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.status").value(-1));
+
+        verifyNoInteractions(mobileIngestService);
+    }
+
+    @Test
+    @DisplayName("без clientId — HTTP 400, поле clientId в data.details, сервис не вызывается (все три эндпоинта)")
+    void missingClientId_badRequest() throws Exception {
+        String logWithoutClientId = LOG_BODY.replace("\"clientId\":\"install-42\",", "");
+        String statWithoutClientId = STAT_BODY.replace("\"clientId\":\"install-42\",", "");
+
+        mockMvc.perform(post("/public/v1/log/add-batch").contentType(MediaType.APPLICATION_JSON).content(logWithoutClientId))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.data.details[0].clientId").exists());
+        mockMvc.perform(post("/client/v1/log/add-batch").header("X-TokenInfo", TOKEN_INFO)
+                        .contentType(MediaType.APPLICATION_JSON).content(logWithoutClientId))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.data.details[0].clientId").exists());
+        mockMvc.perform(post("/client/v1/stat/add-batch").header("X-TokenInfo", TOKEN_INFO)
+                        .contentType(MediaType.APPLICATION_JSON).content(statWithoutClientId))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.data.details[0].clientId").exists());
 
         verifyNoInteractions(mobileIngestService);
     }

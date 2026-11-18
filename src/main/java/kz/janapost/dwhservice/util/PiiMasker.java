@@ -32,7 +32,12 @@ public class PiiMasker {
     private static final Pattern JWT =
             Pattern.compile("(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]+");
     private static final Pattern BEARER = Pattern.compile("(?i)bearer\\s+[A-Za-z0-9\\-._~+/]+=*");
-    private static final Pattern TOKEN_INFO = Pattern.compile("(?i)(x-tokeninfo[\"']?\\s*[:=]\\s*)(\"[^\"]*\"|\\{[^}]*}|\\S+)");
+    /**
+     * Значение {@code X-TokenInfo} — до конца строки. Раньше JSON обрывался на первой {@code }} (вложенный объект)
+     * или {@code \"} (экранированная строка), и хвост токена оставался в логе. Цена — теряется остаток строки
+     * после заголовка; для логов это допустимо.
+     */
+    private static final Pattern TOKEN_INFO = Pattern.compile("(?i)(x-tokeninfo[\"']?\\s*[:=][ \\t]*)[^\\r\\n]*");
     /** 13–19 цифр, допускаются пробелы и дефисы между ними. */
     private static final Pattern CARD_CANDIDATE = Pattern.compile("(?<![\\d-])\\d(?:[ -]?\\d){12,18}(?![\\d-])");
     /** KZ: +7 / 7 / 8 и 10 цифр. */

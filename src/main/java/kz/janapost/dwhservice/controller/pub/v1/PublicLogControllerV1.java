@@ -16,7 +16,7 @@ import java.util.concurrent.CompletableFuture;
 
 /**
  * Логи мобильного приложения до входа (падение на старте, экран входа) → Kafka {@code event_dwh_log}.
- * Без токена: лимит частоты по IP и {@code deviceId}, меньше пачка и тело, отдельный флаг {@code mobile.public-enabled}.
+ * Без токена: лимит частоты по IP и {@code clientId}, меньше пачка и тело, отдельный флаг {@code mobile.public-enabled}.
  */
 @RestController
 @RequestMapping("/public/v1/log")

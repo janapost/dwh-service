@@ -42,7 +42,7 @@ SELECT
     JSONExtractString(raw, 'sender', 'params', 'deviceModel')              AS device_model,
     JSONExtractString(raw, 'sender', 'params', 'osVersion')                AS os_version,
     JSONExtractString(raw, 'sender', 'jpid')                               AS jpid,
-    JSONExtractString(raw, 'sender', 'params', 'deviceId')                 AS device_id,
+    JSONExtractString(raw, 'sender', 'params', 'clientId')                 AS client_id,
     toUInt8(JSONExtractBool(raw, 'sender', 'params', 'untrusted'))         AS untrusted
 FROM kafka_dwh_log
 WHERE length(_error) = 0

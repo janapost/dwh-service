@@ -32,7 +32,8 @@ SELECT
     JSONExtractFloat(raw, 'data', 'value')                                 AS value,
     JSONExtract(raw, 'data', 'tags', 'Map(String, String)')                AS tags,
     JSONExtractString(raw, 'sender', 'params', 'appVersion')               AS app_version,
-    JSONExtractString(raw, 'sender', 'jpid')                               AS jpid
+    JSONExtractString(raw, 'sender', 'jpid')                               AS jpid,
+    JSONExtractString(raw, 'sender', 'params', 'clientId')                 AS client_id
 FROM kafka_dwh_stat
 WHERE length(_error) = 0
   AND JSONHas(raw, 'data', 'metric')

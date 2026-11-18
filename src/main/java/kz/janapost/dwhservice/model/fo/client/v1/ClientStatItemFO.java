@@ -9,9 +9,11 @@ import lombok.Data;
 
 import java.util.Map;
 
-/** Одно значение метрики. Обязательны только {@code metric} и {@code value}. */
+/** Одно значение метрики. Обязательны {@code eventId}, {@code metric} и {@code value}. */
 @Data
 public class ClientStatItemFO {
+    /** UUID записи, как у логов: один раз на запись, при повторе — тот же. */
+    @NotBlank
     @Pattern(regexp = MobileClientInfo.UUID_REGEX, message = "must be UUID")
     private String eventId;
 

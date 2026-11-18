@@ -8,12 +8,16 @@ import lombok.Data;
 
 import java.util.Map;
 
-/** Одна запись лога. Обязательны только {@code level} и {@code message}. */
+/** Одна запись лога. Обязательны {@code eventId}, {@code level} и {@code message}. */
 @Data
 public class ClientLogItemFO {
     public static final String LEVEL_REGEX = "(?i)INFO|WARN|ERROR";
 
-    /** UUID записи. Приложение создаёт его один раз и повторяет при повторной отправке; нет — создаст dwh. */
+    /**
+     * UUID записи. Приложение создаёт его один раз и повторяет при повторной отправке: по нему убираются дубли
+     * после повтора пачки (Kafka могла принять часть записей до ошибки).
+     */
+    @NotBlank
     @Pattern(regexp = MobileClientInfo.UUID_REGEX, message = "must be UUID")
     private String eventId;
 

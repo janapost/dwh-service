@@ -2,6 +2,7 @@ package kz.janapost.dwhservice.service.impl;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import kz.janapost.commonsdk.bean.GenericResult;
 import kz.janapost.dwhservice.config.properties.MobileIngestProperties;
 import kz.janapost.dwhservice.event.sender.DwhKafkaPublisher;
@@ -25,7 +26,9 @@ import org.springframework.kafka.support.SendResult;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -45,10 +48,13 @@ class MobileIngestService_13_11_2026Test {
 
     private static final String JPID = "JP4595925";
     private static final String EVENT_ID = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+    private static final String CLIENT_ID = "install-42";
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     @SuppressWarnings("unchecked")
     private final KafkaTemplate<String, String> kafkaTemplate = mock(KafkaTemplate.class);
+
+    private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
 
     private MobileIngestProperties properties;
     private MobileIngestService_13_11_2026 service;
@@ -63,7 +69,8 @@ class MobileIngestService_13_11_2026Test {
                 properties,
                 new MobileRateLimiter(properties, mock(StringRedisTemplate.class)),
                 new DwhKafkaPublisher(kafkaTemplate, objectMapper),
-                new PiiMasker());
+                new PiiMasker(),
+                meterRegistry);
     }
 
     @Test
@@ -136,6 +143,7 @@ class MobileIngestService_13_11_2026Test {
         item.setValue(1.0);
         item.setTimestamp(1000L);
         ClientStatBatchFO fo = new ClientStatBatchFO();
+        fo.setPlatform("android");
         fo.setItems(List.of(item));
 
         service.acceptClientStats(JPID, fo).get();
@@ -144,19 +152,61 @@ class MobileIngestService_13_11_2026Test {
     }
 
     @Test
-    @DisplayName("необязательные поля не пришли: eventId — новый UUID, timestamp — время сервера, платформа — mobile")
+    @DisplayName("необязательные поля не пришли: timestamp — время сервера, в params только clientId и appVersion")
     void clientLogs_optionalFieldsMissing() throws Exception {
         kafkaAccepts();
         long before = System.currentTimeMillis();
 
-        service.acceptClientLogs(JPID, logBatch(null, logItem(null, null, "INFO", "started"))).get();
+        service.acceptClientLogs(JPID, logBatch("IOS", logItem(EVENT_ID, null, "INFO", "started"))).get();
 
         JsonNode message = singleSentMessage(properties.getLogTopic());
-        assertThat(message.at("/sender/appName").asText()).isEqualTo("mobile");
-        assertThat(message.at("/data/eventId").asText()).matches("[0-9a-f-]{36}");
+        assertThat(message.at("/sender/appName").asText()).isEqualTo("mobile-ios");
+        assertThat(message.at("/data/eventId").asText()).isEqualTo(EVENT_ID);
         assertThat(message.at("/data/timestamp").asLong()).isGreaterThanOrEqualTo(before);
         assertThat(message.at("/data").has("stackTrace")).isFalse();
-        assertThat(message.at("/sender/params").size()).isZero(); // в т. ч. нет untrusted: запрос с токеном
+        // в т. ч. нет untrusted: запрос с токеном
+        assertThat(message.at("/sender/params").properties()).extracting(Map.Entry::getKey)
+                .containsExactlyInAnyOrder("clientId", "appVersion");
+    }
+
+    @Test
+    @DisplayName("clientId в sender.params во всех трёх эндпоинтах")
+    void clientId_inAllEndpoints() throws Exception {
+        kafkaAccepts();
+        ClientStatBatchFO stats = new ClientStatBatchFO();
+        stats.setPlatform("ios");
+        stats.setAppVersion("5.12.0");
+        stats.setClientId(CLIENT_ID);
+        stats.setItems(List.of(statItem("m", 1.0)));
+
+        service.acceptClientLogs(JPID, logBatch("android", logItem(null, null, "INFO", "after login"))).get();
+        service.acceptClientStats(JPID, stats).get();
+        service.acceptPublicLogs("1.2.3.4", publicBatch(logItem(null, null, "INFO", "before login"))).get();
+
+        ArgumentCaptor<String> json = ArgumentCaptor.forClass(String.class);
+        verify(kafkaTemplate, times(3)).send(anyString(), json.capture());
+        for (String value : json.getAllValues()) {
+            assertThat(objectMapper.readTree(value).at("/sender/params/clientId").asText()).isEqualTo(CLIENT_ID);
+        }
+    }
+
+    @Test
+    @DisplayName("ошибка Kafka: ответ собирается на своём пуле, а не на потоке, завершившем отправку; метрика растёт")
+    void kafkaFailure_handledOffKafkaThread_andCounted() throws Exception {
+        CompletableFuture<SendResult<String, String>> send = new CompletableFuture<>();
+        when(kafkaTemplate.send(anyString(), anyString())).thenReturn(send);
+
+        CompletableFuture<String> handledOn = service.acceptClientLogs(JPID, logBatch("android", logItem(null, null, "INFO", "x")))
+                .thenApply(result -> result.getStatus() + "@" + Thread.currentThread().getName());
+        Thread kafkaThread = new Thread(() -> send.completeExceptionally(new IllegalStateException("broker down")),
+                "kafka-producer-network-thread");
+        kafkaThread.start();
+        kafkaThread.join();
+
+        assertThat(handledOn.get(5, TimeUnit.SECONDS))
+                .isEqualTo(MobileIngestService_13_11_2026.KAFKA_UNAVAILABLE_STATUS + "@dwh-publish-callback-1");
+        assertThat(meterRegistry.counter(MobileIngestService_13_11_2026.PUBLISH_FAILED_METRIC, "topic", "event_dwh_log")
+                .count()).isEqualTo(1.0);
     }
 
     @Test
@@ -301,19 +351,16 @@ class MobileIngestService_13_11_2026Test {
     }
 
     @Test
-    @DisplayName("лог до входа: без jpid, deviceId и пометка untrusted=true в sender.params")
-    void publicLogs_noJpidAndDeviceId() throws Exception {
+    @DisplayName("лог до входа: без jpid, с clientId и пометкой untrusted=true в sender.params")
+    void publicLogs_noJpid_clientIdAndUntrusted() throws Exception {
         kafkaAccepts();
-        PublicLogBatchFO fo = new PublicLogBatchFO();
-        fo.setPlatform("android");
-        fo.setDeviceId("install-42");
-        fo.setItems(List.of(logItem(null, null, "ERROR", "crash on start")));
 
-        service.acceptPublicLogs("95.56.12.34", fo).get();
+        service.acceptPublicLogs("95.56.12.34", publicBatch(logItem(null, null, "ERROR", "crash on start"))).get();
 
         JsonNode message = singleSentMessage(properties.getLogTopic());
         assertThat(message.at("/sender/jpid").isNull()).isTrue();
-        assertThat(message.at("/sender/params/deviceId").asText()).isEqualTo("install-42");
+        assertThat(message.at("/sender/params/clientId").asText()).isEqualTo(CLIENT_ID);
+        assertThat(message.at("/sender/params").has("deviceId")).isFalse();
         assertThat(message.at("/sender/params/untrusted").isBoolean()).isTrue();
         assertThat(message.at("/sender/params/untrusted").asBoolean()).isTrue();
     }
@@ -339,16 +386,37 @@ class MobileIngestService_13_11_2026Test {
         return objectMapper.readTree(json.getValue());
     }
 
+    /** Пачка с обязательными полями, как после валидации контроллера. */
     private static ClientLogBatchFO logBatch(String platform, ClientLogItemFO... items) {
         ClientLogBatchFO fo = new ClientLogBatchFO();
         fo.setPlatform(platform);
+        fo.setAppVersion("5.12.0");
+        fo.setClientId(CLIENT_ID);
         fo.setItems(new ArrayList<>(List.of(items)));
         return fo;
     }
 
+    private static PublicLogBatchFO publicBatch(ClientLogItemFO... items) {
+        PublicLogBatchFO fo = new PublicLogBatchFO();
+        fo.setPlatform("android");
+        fo.setAppVersion("5.12.0");
+        fo.setClientId(CLIENT_ID);
+        fo.setItems(new ArrayList<>(List.of(items)));
+        return fo;
+    }
+
+    private static ClientStatItemFO statItem(String metric, double value) {
+        ClientStatItemFO item = new ClientStatItemFO();
+        item.setEventId(UUID.randomUUID().toString());
+        item.setMetric(metric);
+        item.setValue(value);
+        return item;
+    }
+
+    /** {@code eventId = null} — новый UUID: обязателен после валидации. */
     private static ClientLogItemFO logItem(String eventId, Long timestamp, String level, String message) {
         ClientLogItemFO item = new ClientLogItemFO();
-        item.setEventId(eventId);
+        item.setEventId(eventId != null ? eventId : UUID.randomUUID().toString());
         item.setTimestamp(timestamp);
         item.setLevel(level);
         item.setMessage(message);

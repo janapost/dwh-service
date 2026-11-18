@@ -32,6 +32,11 @@
 (`GenericResultFeignConfig`: 429 / 5xx повторяются, остальные 4xx → `FeignCallException` со статусом из тела)
 проверяет `FeignSdkCompatibilityTest`.
 
+## Мониторинг и логи сервиса
+
+- `dwh_mobile_publish_failed_total{topic}` (Prometheus, порт 9090) — пачки, которые Kafka не приняла (ответ 503). Алерт — на рост этой метрики, а не на строки в логе.
+- `exception-mobile-kafka-publish` и `mobile-rate-limit` (SimpleLogger) пишутся не чаще раза в период (`util/ThrottledLog`: минута / `redis-cooldown-ms`), с числом пропущенных записей. В них только техническое описание ошибки — без тела пачки, `jpid` и IP.
+
 ## Переменные окружения
 
 | Переменная | Назначение |
@@ -56,9 +61,9 @@
   - ИИН / БИН (12 цифр с контрольной цифрой).
 
   Маскирование эвристическое, приложение не должно логировать ПДн.
-- **Kafka.** Трафик идёт только внутри сети: dev1 — Kafka в кластере (`PLAINTEXT`), stage / prod — Yandex Managed Kafka по внутренним адресам (`SASL_PLAINTEXT`, SCRAM-SHA-512, как у остальных сервисов). Пароль SCRAM по сети не передаётся, но сами сообщения (логи, `jpid`, `device_id`) не шифруются. Переход на `SASL_SSL`: `KAFKA_SECURITY_PROTOCOL=SASL_SSL`, TLS-порт брокера и CA-сертификат Yandex в truststore образа. Это решение по инфраструктуре для всех сервисов.
+- **Kafka.** Трафик идёт только внутри сети: dev1 — Kafka в кластере (`PLAINTEXT`), stage / prod — Yandex Managed Kafka по внутренним адресам (`SASL_PLAINTEXT`, SCRAM-SHA-512, как у остальных сервисов). Пароль SCRAM по сети не передаётся, но сами сообщения (логи, `jpid`, `client_id`) не шифруются. Переход на `SASL_SSL`: `KAFKA_SECURITY_PROTOCOL=SASL_SSL`, TLS-порт брокера и CA-сертификат Yandex в truststore образа. Это решение по инфраструктуре для всех сервисов.
 - **Redis недоступен.** Запросы не блокируются, а ограничиваются локально, в памяти пода (переменные выше).
-- **Логи до входа (`/public`) — недоверенные данные.** Без токена клиент сам задаёт `deviceId`, `appVersion`, платформу и текст. Такие строки в `logs` помечены `untrusted = 1` (`sender.params.untrusted = true`), в аналитике их нужно отделять: `WHERE untrusted = 0`. От злоупотреблений защищают флаг, лимиты частоты, размер пачки и тела. Подпись или app attestation для `/public` пока нет.
+- **Логи до входа (`/public`) — недоверенные данные.** Без токена клиент сам задаёт `clientId`, `appVersion`, платформу и текст. Такие строки в `logs` помечены `untrusted = 1` (`sender.params.untrusted = true`), в аналитике их нужно отделять: `WHERE untrusted = 0`. От злоупотреблений защищают флаг, лимиты частоты, размер пачки и тела. Подпись или app attestation для `/public` пока нет.
 
 ### Перед включением `/public` (`DWH_MOBILE_PUBLIC_ENABLED=true`)
 

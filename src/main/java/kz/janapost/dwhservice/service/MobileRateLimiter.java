@@ -2,7 +2,7 @@ package kz.janapost.dwhservice.service;
 
 import kz.janapost.dwhservice.config.properties.MobileIngestProperties;
 import kz.janapost.dwhservice.exception.TooManyRequestsException;
-import kz.janapost.simplelogger.SimpleLogger;
+import kz.janapost.dwhservice.util.ThrottledLog;
 import kz.janapost.util.ExceptionUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -21,7 +21,7 @@ import java.util.function.LongSupplier;
  * (Redis + Lua, общий счётчик на все поды, fail-open): это потолок нагрузки, а не защита от перебора.
  * <ul>
  *     <li>после входа: {@code dwh-mobile-rl:user:{jpid}}, затем {@code dwh-mobile-rl:global};</li>
- *     <li>до входа: {@code dwh-mobile-rl:ip:{ip}}, {@code dwh-mobile-rl:device:{deviceId}} (если пришёл),
+ *     <li>до входа: {@code dwh-mobile-rl:ip:{ip}}, {@code dwh-mobile-rl:device:{clientId}},
  *         затем {@code dwh-mobile-rl:public-global}.</li>
  * </ul>
  * Счётчики проверяются по порядку: превысивший личный лимит клиент не тратит общий.
@@ -86,6 +86,7 @@ public class MobileRateLimiter {
     private final MobileIngestProperties properties;
     private final StringRedisTemplate redis;
     private final LongSupplier clock;
+    private final ThrottledLog redisFailureLog;
 
     /** Redis подтверждён живым последним успешным вызовом. */
     private volatile boolean redisHealthy;
@@ -106,6 +107,7 @@ public class MobileRateLimiter {
         this.properties = properties;
         this.redis = redis;
         this.clock = clock;
+        this.redisFailureLog = new ThrottledLog(LOG_NAME, getClass(), properties.getRateLimit().getRedisCooldownMs(), clock);
     }
 
     /** Запрос после входа. Бросает {@link TooManyRequestsException}, если превышен лимит клиента или общий. */
@@ -131,20 +133,19 @@ public class MobileRateLimiter {
      * Запрос до входа. Бросает {@link TooManyRequestsException}, если превышен лимит IP, устройства или общий.
      * Пока Redis недоступен — локальный лимит {@code public-local-max-per-second} на под вместо Redis.
      */
-    public void checkPublic(String ip, String deviceId) {
+    public void checkPublic(String ip, String clientId) {
         MobileIngestProperties.RateLimit limit = properties.getRateLimit();
         if (!limit.isEnabled()) {
             return;
         }
+        // clientId обязателен и проверен (@NotBlank, [A-Za-z0-9._:-]{1,64}) — безопасен для ключа Redis.
         Limits limits = new Limits()
                 .add(IP_KEY_PREFIX + (ip == null ? "unknown" : ip),
-                        limit.getPerIpWindowSeconds(), limit.getPerIpMaxRequests(), 0);
-        if (deviceId != null && !deviceId.isBlank()) {
-            limits.add(DEVICE_KEY_PREFIX + deviceId,
-                    limit.getPerDeviceWindowSeconds(), limit.getPerDeviceMaxRequests(), 0);
-        }
-        limits.add(PUBLIC_GLOBAL_KEY, limit.getGlobalWindowSeconds(), limit.getPublicGlobalMaxRequests(),
-                limit.getGlobalRetryAfterSeconds());
+                        limit.getPerIpWindowSeconds(), limit.getPerIpMaxRequests(), 0)
+                .add(DEVICE_KEY_PREFIX + clientId,
+                        limit.getPerDeviceWindowSeconds(), limit.getPerDeviceMaxRequests(), 0)
+                .add(PUBLIC_GLOBAL_KEY, limit.getGlobalWindowSeconds(), limit.getPublicGlobalMaxRequests(),
+                        limit.getGlobalRetryAfterSeconds());
         Long retryAfterSec = countSafely(limits);
         if (retryAfterSec == null) {
             throwIfLimited(publicLocal.allow(limit.getPublicLocalMaxPerSecond()) ? 0 : limit.getGlobalRetryAfterSeconds());
@@ -187,16 +188,12 @@ public class MobileRateLimiter {
 
     private void onRedisFailure(RuntimeException e) {
         redisHealthy = false;
-        long now = clock.getAsLong();
-        long previous = redisSkipUntil.getAndSet(now + properties.getRateLimit().getRedisCooldownMs());
-        if (previous <= now) {
-            // Только тот, кто открыл паузу: лог раз за период, без данных клиента.
-            SimpleLogger.getInstanceDayly(LOG_NAME, getClass())
-                    .append("redis unavailable for " + properties.getRateLimit().getRedisCooldownMs()
-                            + " ms: limited per pod in memory, /public "
-                            + properties.getRateLimit().getPublicLocalMaxPerSecond() + " rps, /client "
-                            + properties.getRateLimit().getClientLocalMaxPerSecond() + " rps", ExceptionUtil.getStackTrace(e));
-        }
+        MobileIngestProperties.RateLimit limit = properties.getRateLimit();
+        redisSkipUntil.set(clock.getAsLong() + limit.getRedisCooldownMs());
+        // Лог раз за период, без данных клиента.
+        redisFailureLog.append("redis unavailable for " + limit.getRedisCooldownMs()
+                + " ms: limited per pod in memory, /public " + limit.getPublicLocalMaxPerSecond() + " rps, /client "
+                + limit.getClientLocalMaxPerSecond() + " rps", () -> ExceptionUtil.getStackTrace(e));
     }
 
     private static final class Limits {

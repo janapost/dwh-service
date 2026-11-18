@@ -60,7 +60,10 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 class FeignSdkCompatibilityTest {
 
     private static final String PATH = "/public/v1/log/add-batch";
-    private static final String LOG_BODY = "{\"items\":[{\"level\":\"ERROR\",\"message\":\"crash\"}]}";
+    private static final String LOG_BODY = """
+            {"platform":"android","appVersion":"5.12.0","clientId":"install-42",
+             "items":[{"eventId":"7c9e6679-7425-40de-944b-e07fc1f90ae7","level":"ERROR","message":"crash"}]}
+            """;
 
     @Autowired
     private MockMvc mockMvc;

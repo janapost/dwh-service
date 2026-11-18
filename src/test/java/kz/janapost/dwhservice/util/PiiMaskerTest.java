@@ -58,6 +58,16 @@ class PiiMaskerTest {
                 .isEqualTo("X-TokenInfo: " + PiiMasker.TOKEN_MASK);
     }
 
+    @Test
+    @DisplayName("X-TokenInfo с вложенным JSON или экранированной строкой маскируется целиком, до конца строки")
+    void tokenInfo_nestedJson_maskedToEndOfLine() {
+        String nested = "X-TokenInfo: {\"jpid\":\"JP1\",\"device\":{\"id\":\"d1\"},\"secret\":\"s3cr3t\"}";
+        String escaped = "{\"X-TokenInfo\":\"{\\\"jpid\\\":\\\"JP1\\\",\\\"secret\\\":\\\"s3cr3t\\\"}\"}";
+
+        assertThat(masker.mask(nested + "\nnext line")).isEqualTo("X-TokenInfo: " + PiiMasker.TOKEN_MASK + "\nnext line");
+        assertThat(masker.mask(escaped)).doesNotContain("s3cr3t").doesNotContain("JP1");
+    }
+
     // Примеры ИИН посчитаны отдельно от кода (awk по алгоритму контрольной цифры ИИН/БИН РК).
     @ParameterizedTest
     @ValueSource(strings = {"900101300007", "900101300811"})

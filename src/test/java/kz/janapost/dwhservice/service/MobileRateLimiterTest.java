@@ -107,19 +107,22 @@ class MobileRateLimiterTest {
     }
 
     @Test
-    @DisplayName("до входа: 20 запросов с IP проходят, 21-й — отказ")
+    @DisplayName("до входа: 20 запросов с IP (разные clientId) проходят, 21-й — отказ")
     void public_perIpLimit() {
-        passesPublic(IP, null, 20);
+        for (int i = 0; i < 20; i++) {
+            passesPublic(IP, "device-" + i, 1);
+        }
 
-        assertThat(retryAfterPublic(IP, null)).isBetween(1L, 60L);
+        assertThat(retryAfterPublic(IP, "device-20")).isBetween(1L, 60L);
     }
 
     @Test
-    @DisplayName("до входа: лимит устройства срабатывает раньше лимита IP")
+    @DisplayName("до входа: 11-й запрос с одного clientId за минуту — отказ, раньше лимита IP; другой clientId проходит")
     void public_perDeviceLimit() {
         passesPublic(IP, DEVICE_ID, 10);
 
         assertThat(retryAfterPublic(IP, DEVICE_ID)).isBetween(1L, 60L);
+        assertThat(redis.opsForValue().get(MobileRateLimiter.DEVICE_KEY_PREFIX + DEVICE_ID)).isEqualTo("11");
         passesPublic(IP, "device-2", 1);
     }
 
@@ -127,9 +130,9 @@ class MobileRateLimiterTest {
     @DisplayName("до входа: общий лимит не зависит от лимита после входа")
     void public_globalLimitIsSeparate() {
         limit.setPublicGlobalMaxRequests(1);
-        passesPublic("10.0.0.1", null, 1);
+        passesPublic("10.0.0.1", "device-a", 1);
 
-        assertThat(retryAfterPublic("10.0.0.2", null)).isEqualTo(30);
+        assertThat(retryAfterPublic("10.0.0.2", "device-b")).isEqualTo(30);
         passesClient(JPID, 1);
     }
 

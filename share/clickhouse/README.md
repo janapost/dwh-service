@@ -13,7 +13,7 @@ Kafka event_dwh_stat ──▶ kafka_dwh_stat ──mv_dwh_stat─────�
 
 | Файл | Что делает |
 |---|---|
-| `01_tables.sql` | Создаёт таблицы `logs`, `stats`, `kafka_errors`; на уже созданной `logs` добавляет `device_id` (`ADD COLUMN IF NOT EXISTS`) |
+| `01_tables.sql` | Создаёт таблицы `logs`, `stats`, `kafka_errors`; на уже созданных — переименовывает `device_id` в `client_id`, добавляет `client_id`, `untrusted` и индексы (идемпотентно) |
 | `02_kafka_log.sql` | Kafka-таблица и MV для логов |
 | `03_kafka_stat.sql` | Kafka-таблица и MV для статистики |
 | `04_ttl.sql` | Меняет сроки хранения без пересоздания таблиц |
@@ -99,10 +99,25 @@ DRY_RUN=1 ./apply.sh 05_drop_mv.sql 02_kafka_log.sql 03_kafka_stat.sql   # по�
 `05_drop_mv.sql` удаляет сначала `mv_*_errors`, потом основной MV. Без подключённых MV Kafka engine не читает, offset группы стоит на месте, сообщения ждут в Kafka. Затем `02`/`03` создают основной MV и `mv_*_errors`. Валидные сообщения не теряются. В короткий промежуток между созданием двух MV могут не попасть в `kafka_errors` только битые.
 
 После пересоздания:
-- `SHOW CREATE TABLE mv_dwh_log` содержит окно и `device_id`;
+- `SHOW CREATE TABLE mv_dwh_log` и `mv_dwh_stat` содержат окно и `client_id`;
 - проверки 5–7 из раздела «Проверка» проходят.
 
-`./apply.sh 01_tables.sql` перед этим добавит колонку `device_id` в уже созданную `logs`.
+### `device_id` → `client_id` (UPM-2238, ревью)
+
+На уже созданной `logs` колонка `device_id` переименовывается в `client_id` (значения сохраняются), в `stats` добавляется `client_id`, в обе — `bloom_filter`-индекс. Старый `mv_dwh_log` пишет в `device_id`, поэтому `01` — только между удалением и созданием MV:
+
+```bash
+DRY_RUN=1 ./apply.sh 05_drop_mv.sql 01_tables.sql 02_kafka_log.sql 03_kafka_stat.sql   # посмотреть SQL
+./apply.sh 05_drop_mv.sql 01_tables.sql 02_kafka_log.sql 03_kafka_stat.sql
+```
+
+Проверка:
+
+```sql
+SELECT table, name FROM system.columns WHERE table IN ('logs', 'stats') AND name IN ('device_id', 'client_id');
+-- ожидается: logs.client_id, stats.client_id; device_id нет
+SELECT table, name FROM system.data_skipping_indices WHERE name = 'idx_client_id';
+```
 
 ## Изменение схемы
 
@@ -144,6 +159,6 @@ WHERE received_at > now() - INTERVAL 1 HOUR GROUP BY topic, error;
    - чтение не встаёт;
    - все 150 записей в `logs` с `ts` ≈ время вставки;
    - lag группы `clickhouse_dwh_log` уходит в 0.
-6. **Лог до входа** (`/public/v1/log/add-batch` с `deviceId`) виден в `logs` с пустым `jpid` и `device_id` = `deviceId`.
+6. **Лог до входа** (`/public/v1/log/add-batch`) виден в `logs` с пустым `jpid`, `client_id` = присланный `clientId` и `untrusted = 1`. Лог до и после входа с одного устройства находятся одним `WHERE client_id = '…'`.
 7. **Сбитые часы.** Лог с `data.timestamp = 1000` (1970) виден в `logs` с `ts` ≈ время вставки и не удаляется TTL.
 8. То же для статистики (`data.metric`, `data.value`).
