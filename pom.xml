@@ -64,6 +64,11 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
+        <!-- S2S: WebClient for AppsFlyer, as in client-service (WebAppsFlyerConfig). The app stays servlet (MVC) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webflux</artifactId>
+        </dependency>
 
         <!-- JanaPost -->
         <dependency>
@@ -86,6 +91,23 @@
             <artifactId>monitoring</artifactId>
             <version>1.0.0-Release</version>
         </dependency>
+        <!-- S2S (UPM-2661): consumer of event_s2s, Mongo journal of AppsFlyer, locks of retry/cleanup schedulers.
+             jpevent requires MongoTemplate and RedisLock at startup (versions as in client-service). -->
+        <dependency>
+            <groupId>kz.janapost</groupId>
+            <artifactId>jpevent</artifactId>
+            <version>1.0.0-Release</version>
+        </dependency>
+        <dependency>
+            <groupId>kz.janapost</groupId>
+            <artifactId>redis-lock</artifactId>
+            <version>1.0.0-Release</version>
+        </dependency>
+        <dependency>
+            <groupId>kz.janapost</groupId>
+            <artifactId>mongodb</artifactId>
+            <version>2.0.0-REALEASE</version>
+        </dependency>
 
         <dependency>
             <groupId>org.projectlombok</groupId>
@@ -103,6 +125,11 @@
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>mongodb</artifactId>
             <scope>test</scope>
         </dependency>
         <!-- Декодеры межсервисных вызовов: проверяем, что наши HTTP-коды и тела они разбирают как задумано -->
