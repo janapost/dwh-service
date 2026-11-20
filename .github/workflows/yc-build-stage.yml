@@ -10,7 +10,7 @@ env:
   ECR_REGISTRY: harbor.janapost.kz/janapost
   ECR_REPOSITORY: ${{ github.event.repository.name }}
   REGISTRY_PASS: ${{ secrets.REGPASS }}
-  IMAGE_TAG: stage-${{ github.run_number }}
+  IMAGE_TAG: dev-${{ github.run_number }}
 
 jobs:
   build:
