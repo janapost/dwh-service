@@ -23,6 +23,20 @@
   - `POST /public/v1/log/add-batch` — до входа.
 
   Проверяют данные, маскируют ПДн и публикуют в те же топики. API — `context-files/dwh-service/mobile-log-api.md`.
+- **S2S-события** (UPM-2661): client-service публикует бизнес-события и ID устройств в Kafka `event_s2s`, dwh-service отправляет их провайдерам. Сейчас провайдер один — AppsFlyer (перенесён из client-service), под Adjust иерархия готова. План и переключение — `context-files/dwh-service/UPM-2661-plan.md`.
+
+## S2S (UPM-2661)
+
+```
+event_s2s ─▶ S2SEventProcessor (jpevent) ─▶ S2SDispatcher ─▶ default-bean + parallel-beans
+                                                              └─ AppsflyerS2SService_19_11_2026 ("appsflyer_s2s_sender")
+```
+
+- **Иерархия:** `service/s2s/S2SService` (контракт провайдера) → `AbstractS2SService` (общий конвейер: резерв по ключу дедупликации до отправки, `NO_IDENTITY`, ретрай, теневой режим) → провайдеры. Новый провайдер — бин с именем, затем имя в `S2S_DEFAULT_BEAN_NAME` / `S2S_PARALLEL_BEANS`. Неизвестное имя — сервис не стартует.
+- **AppsFlyer:** запрос тот же байт в байт, что в client-service (тело, имена, параметры, `eventTime`). Это проверяет `AppsflyerS2SService_19_11_2026Test` против дословной копии кода client-service (`ClientServiceAppsflyerReference`). Журнал — коллекции `AppsflyerEventPO` / `AppsflyerIdentityPO`, та же схема, что в client-service.
+- **Отличия от client-service:** таймауты HTTP (`APPSFLYER_CONNECT_TIMEOUT` / `APPSFLYER_READ_TIMEOUT`), лимиты ретрая из свойств, теневой режим `APPSFLYER_SEND_ENABLED=false` (по умолчанию): ID и строки журнала сохраняются, в AppsFlyer ничего не уходит.
+- **Ошибки:** сбой хранилища до резерва → событие Kafka повторяется (jpevent `RETRY`, до 24 ч); сбой HTTP → строка `FAILED`, её повторяет `S2SScheduler` (раз в 5 мин, до `APPSFLYER_RETRY_MAX_ATTEMPTS`). Повторы безопасны: уникальный `dedupKey`.
+- **Mongo-скрипт:** `scripts/s2s/s2s-indexes.js` — индексы, запускать до включения консьюмера.
 
 ## HTTP-коды ответов
 
@@ -50,6 +64,12 @@
 | `DWH_MOBILE_*`, `DWH_MOBILE_RL_*` | лимиты пачки, тела и частоты — см. `share/application-yandex.properties` |
 | `DWH_TRUSTED_PROXIES` | точный CIDR подов ingress / gateway, от которых принимается `X-Real-IP`. По умолчанию пусто: заголовку не доверяем, лимит — по адресу соединения |
 | `DWH_MOBILE_RL_PUBLIC_LOCAL_MAX` / `DWH_MOBILE_RL_CLIENT_LOCAL_MAX` | лимит `/public` / `/client` в секунду на под, пока Redis недоступен (по умолчанию 50 / 200) |
+| `MONGO_HOST`, `MONGO_PORT`, `MONGO_USER`, `MONGO_PWD`, `MONGO_DB`, `MONGO_AUTH_DB` | **обязательны**: своя база dwh-service (журнал S2S, коллекция jpevent `Event_dwh_service`). Без Mongo сервис не стартует |
+| `S2S_CONSUMER_ENABLED` | читать `event_s2s` (по умолчанию `false`) |
+| `S2S_DEFAULT_BEAN_NAME` / `S2S_PARALLEL_BEANS` | основной провайдер / параллельные через запятую (по умолчанию `appsflyer_s2s_sender` / пусто) |
+| `APPSFLYER_SEND_ENABLED` | отправлять в AppsFlyer (по умолчанию `false` — теневой режим). При `true` пустой `APPSFLYER_S2S_KEY` не даст сервису стартовать |
+| `APPSFLYER_S2S_KEY`, `APPSFLYER_ANDROID_APP_ID`, `APPSFLYER_IOS_APP_ID` | ключ и app id AppsFlyer (те же, что у client-service); ключ — секрет |
+| `APPSFLYER_EVENT_CLEANUP_ENABLED` | ночная очистка `SENT` / `SKIPPED` старше 90 дней (по умолчанию `false`; включать после индекса `(status, createTime)`) |
 
 ## Безопасность и ограничения
 
@@ -83,7 +103,7 @@
 
 Значения по окружениям — в репозитории `argocd`: `services/dwh-service/janapost-dev1.yaml` (dev1) и `services/dwh-service/stage/values.yaml` (stage).
 
-Mongo приходит транзитивно (`log-manager` → `kz.janapost:util`), но его автоконфигурация выключена (`spring.autoconfigure.exclude`), пока Mongo никто не использует.
+Mongo обязателен с UPM-2661: jpevent при старте создаёт коллекцию `Event_dwh_service` и без базы падает через 30 с. Перед выкаткой версии с S2S в `argocd` должны быть `MONGO_*`.
 
 ## CI/CD
 
